@@ -9,7 +9,7 @@ setup(
     author_email='youngro@tcd.ie',
     license='MIT',
     url='https://github.com/roberty99/pyephember2',
-    download_url='https://github.com/roberty99/pyephember2/archive/0.4.1.tar.gz',
+    download_url='https://github.com/roberty99/pyephember2/archive/0.4.3.tar.gz',
     platforms=["any"],
     packages=find_packages(),
     zip_safe=False,
