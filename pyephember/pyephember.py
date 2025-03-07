@@ -303,7 +303,7 @@ class EphMessenger:
         )
         token = credentials['token']
 
-        mclient = mqtt.Client(self.client_id)
+        mclient = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, self.client_id)
         mclient.tls_set()
         self.client = mclient
 
