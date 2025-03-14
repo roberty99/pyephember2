@@ -14,7 +14,6 @@ from enum import Enum
 import requests
 import paho.mqtt.client as mqtt
 
-
 class ZoneMode(Enum):
     """
     Modes that a zone can be set too
