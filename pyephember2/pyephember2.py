@@ -319,6 +319,14 @@ def zone_is_scheduled_on(zone):
 
     return False
 
+# Hot water devices - no temperature control
+HotWaterDevices = [4, 514]
+
+def zone_is_hotwater(zone):
+    if zone["deviceType"] in HotWaterDevices:
+        return True
+    else:
+        return False
 
 def zone_name(zone):
     """
@@ -369,7 +377,11 @@ def zone_target_temperature(zone):
     """
     Get target temperature for this zone
     """
-    return zone_temperature(zone, PointIndex.TARGET_TEMP)
+    match zone["deviceType"]:
+        case 514:
+            return None
+        case _:
+            return zone_temperature(zone, PointIndex.TARGET_TEMP)
 
 def zone_boost_temperature(zone):
     """
@@ -382,7 +394,11 @@ def zone_current_temperature(zone):
     """
     Get current temperature for this zone
     """
-    return zone_temperature(zone, PointIndex.CURRENT_TEMP)
+    match zone["deviceType"]:
+        case 514:
+            return None
+        case _:
+            return zone_temperature(zone, PointIndex.CURRENT_TEMP)
 
 
 def zone_pointdata_value(zone, pointIndex):
