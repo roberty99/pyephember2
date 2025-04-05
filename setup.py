@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='pyephember2',
-    version='0.4.11',
+    version='0.4.12',
     description='Python library to work with ember from EPH Controls',
     keywords='ephember',
     author='Robert Young',
