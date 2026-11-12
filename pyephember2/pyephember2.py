@@ -769,7 +769,7 @@ class EphEmber:
     def _set_zone_boost_temperature(self, zone, target_temperature):
         return self.messenger.send_zone_commands(
             zone,
-            ZoneCommand('BOOST_TEMP', target_temperature)
+            ZoneCommand('BOOST_TEMP', target_temperature, None)
         )
 
     def _set_zone_advance(self, zone, advance=True):
@@ -779,7 +779,7 @@ class EphEmber:
             advance = 0
         return self.messenger.send_zone_commands(
             zone,
-            ZoneCommand('ADVANCE_ACTIVE', advance)
+            ZoneCommand('ADVANCE_ACTIVE', advance, None)
         )
 
     def _set_zone_boost(self, zone, boost_temperature, num_hours, timestamp=0):
@@ -795,13 +795,13 @@ class EphEmber:
         If timestamp is None, do not send timestamp at all.
         (maybe results in permanent boost?)
         """
-        cmds = [ZoneCommand('BOOST_HOURS', num_hours)]
+        cmds = [ZoneCommand('BOOST_HOURS', num_hours, None)]
         if boost_temperature is not None:
-            cmds.append(ZoneCommand('BOOST_TEMP', boost_temperature))
+            cmds.append(ZoneCommand('BOOST_TEMP', boost_temperature, None))
         if timestamp is not None:
             if timestamp == 0:
                 timestamp = int(datetime.datetime.now().timestamp())
-            cmds.append(ZoneCommand('BOOST_TIME', timestamp))
+            cmds.append(ZoneCommand('BOOST_TIME', timestamp, None))
         return self.messenger.send_zone_commands(zone, cmds)
 
     def _set_zone_mode(self, zone, mode_num, index):
