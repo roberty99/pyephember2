@@ -16,6 +16,13 @@ import requests
 import paho.mqtt.client as mqtt
 
 
+class EphEmberError(RuntimeError):
+    """
+    Raised when the Ember cloud cannot be reached or returns an error.
+    Subclasses RuntimeError so existing callers keep working.
+    """
+
+
 class ZoneMode(Enum):
     """
     Modes that a zone can be set too
@@ -71,7 +78,7 @@ def GetPointIndex(zone, pointIndex) -> int:
         case PointIndex.CTR_18_0AB7:
             return 18
         case _:
-            RuntimeError('Unknown PointIndex:' + pointIndex)
+            raise ValueError('Unknown PointIndex: {}'.format(pointIndex))
 
 
 class PointIndex(Enum):
@@ -96,7 +103,9 @@ class PointIndex(Enum):
 # """
 # Named tuple to hold a command to write data to a zone
 # """
-ZoneCommand = collections.namedtuple('ZoneCommand', ['name', 'value', 'index'])
+ZoneCommand = collections.namedtuple(
+    'ZoneCommand', ['name', 'value', 'index'], defaults=[None]
+)
 
 
 def zone_command_to_ints(zone, command):
@@ -211,9 +220,11 @@ def scheduletime_to_time(dict, key_name):
     stime = dict[key_name]
     if stime is None:
         return None
-    elif stime == 0:                                               
-        return datetime.time(0, 0)
-    return datetime.time(int(str(stime)[:-1]), 10 * int(str(stime)[-1:]))
+    hours, tens_of_minutes = divmod(int(stime), 10)
+    if hours >= 24:
+        # 240 is the end of the day
+        return datetime.time.max
+    return datetime.time(hours, 10 * tens_of_minutes)
 
 def getZoneTime(zone):
     tstamp = time.gmtime(zone["timestamp"] / 1000)
@@ -370,10 +381,10 @@ def zone_temperature(zone, label):
                 return programs[0]["temperature"] / 10
             else:
                 return None
-        else:
-            return zone_pointdata_value(zone, PointIndex(label)) / 10
-    else:
-        return zone_pointdata_value(zone, PointIndex(label)) / 10
+    value = zone_pointdata_value(zone, PointIndex(label))
+    if value is None:
+        return None
+    return value / 10
 
 def zone_target_temperature(zone):
     """
@@ -631,7 +642,7 @@ class EphEmber:
 
         if send_token:
             if not self._do_auth():
-                raise RuntimeError("Unable to login")
+                raise EphEmberError("Unable to login")
             headers["Authorization"] = self._login_data["data"]["token"]
 
         headers["Content-Type"] = "application/json"
@@ -642,10 +653,15 @@ class EphEmber:
         if data and isinstance(data, dict):
             data = json.dumps(data)
 
-        response = method(url, data=data, headers=headers, timeout=timeout)
+        try:
+            response = method(url, data=data, headers=headers, timeout=timeout)
+        except requests.exceptions.RequestException as err:
+            raise EphEmberError(
+                "Cannot connect to Ember: {}".format(err)
+            ) from err
 
         if response.status_code != 200:
-            raise RuntimeError(
+            raise EphEmberError(
                 "{} response code".format(response.status_code)
             )
 
@@ -657,7 +673,7 @@ class EphEmber:
         """
         expires_on = self._login_data["last_refresh"] + \
             datetime.timedelta(seconds=self._refresh_token_validity_seconds)
-        refresh = datetime.datetime.utcnow() + datetime.timedelta(seconds=30)
+        refresh = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=30)
         return expires_on < refresh
 
     def _request_token(self, force=False):
@@ -681,11 +697,11 @@ class EphEmber:
 
         refresh_data = response.json()
 
-        if 'token' not in refresh_data.get('data', {}):
+        if 'token' not in (refresh_data.get('data') or {}):
             return False
 
         self._login_data['data'] = refresh_data['data']
-        self._login_data['last_refresh'] = datetime.datetime.utcnow()
+        self._login_data['last_refresh'] = datetime.datetime.now(datetime.timezone.utc)
 
         return True
 
@@ -707,7 +723,7 @@ class EphEmber:
         if self._login_data['status'] != 0:
             self._login_data = None
             return False
-        self._login_data["last_refresh"] = datetime.datetime.utcnow()
+        self._login_data["last_refresh"] = datetime.datetime.now(datetime.timezone.utc)
 
         if ('data' in self._login_data
                 and 'token' in self._login_data['data']):
@@ -723,7 +739,11 @@ class EphEmber:
         if self._login_data is None:
             return self._login()
 
-        return self._request_token()
+        if self._request_token():
+            return True
+
+        # refresh token rejected or expired: log in again from scratch
+        return self._login()
 
     def _get_user_details(self):
         """
@@ -833,7 +853,7 @@ class EphEmber:
         homes = response.json()
         status = homes.get('status', 1)
         if status != 0:
-            raise RuntimeError("Error getting home: {}".format(status))
+            raise EphEmberError("Error getting home: {}".format(status))
 
         return homes.get("data", [])
 
@@ -870,13 +890,6 @@ class EphEmber:
 
         return home_details["data"]
 
-    def lastKey(dict):
-        return list(dict.keys())[-1]
-
-    def firstKey(dict):
-        return list(dict.keys())[0]
-    
-    # ["homes"]
     def get_homes(self):
         """
         Get the data about a home (API call: homesVT/zoneProgram).
@@ -902,7 +915,7 @@ class EphEmber:
 
             status = homezones.get("status", 1)
             if status != 0:
-                raise RuntimeError("Error getting zones from home: {}".format(status))
+                raise EphEmberError("Error getting zones from home: {}".format(status))
 
             if "data" not in homezones:
                 raise RuntimeError("Error getting zones from home: no data found")
@@ -980,8 +993,9 @@ class EphEmber:
         Get the name of all zones
         """
         zone_names = []
-        for zone in self.get_zones():
-            zone_names.append(zone['name'])
+        for home in self.get_zones():
+            for zone in home['zones']:
+                zone_names.append(zone['name'])
 
         return zone_names
 

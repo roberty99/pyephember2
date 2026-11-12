@@ -1,0 +1,577 @@
+{
+ "data": [
+  {
+   "deviceDays": [
+    {
+     "dayType": 0,
+     "deviceId": "X",
+     "id": "X",
+     "p1": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 80,
+      "id": "X",
+      "startTime": 70,
+      "updateTime": null
+     },
+     "p2": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 193,
+      "id": "X",
+      "startTime": 173,
+      "updateTime": null
+     },
+     "p3": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 195,
+      "id": "X",
+      "startTime": 193,
+      "updateTime": null
+     },
+     "programType": null
+    },
+    {
+     "dayType": 1,
+     "deviceId": "X",
+     "id": "X",
+     "p1": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "p2": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "p3": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 195,
+      "id": "X",
+      "startTime": 194,
+      "updateTime": null
+     },
+     "programType": null
+    },
+    {
+     "dayType": 2,
+     "deviceId": "X",
+     "id": "X",
+     "p1": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 80,
+      "id": "X",
+      "startTime": 70,
+      "updateTime": null
+     },
+     "p2": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 193,
+      "id": "X",
+      "startTime": 173,
+      "updateTime": null
+     },
+     "p3": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 195,
+      "id": "X",
+      "startTime": 193,
+      "updateTime": null
+     },
+     "programType": null
+    },
+    {
+     "dayType": 3,
+     "deviceId": "X",
+     "id": "X",
+     "p1": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 80,
+      "id": "X",
+      "startTime": 70,
+      "updateTime": null
+     },
+     "p2": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 193,
+      "id": "X",
+      "startTime": 173,
+      "updateTime": null
+     },
+     "p3": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 195,
+      "id": "X",
+      "startTime": 193,
+      "updateTime": null
+     },
+     "programType": null
+    },
+    {
+     "dayType": 4,
+     "deviceId": "X",
+     "id": "X",
+     "p1": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 80,
+      "id": "X",
+      "startTime": 70,
+      "updateTime": null
+     },
+     "p2": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 193,
+      "id": "X",
+      "startTime": 173,
+      "updateTime": null
+     },
+     "p3": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 195,
+      "id": "X",
+      "startTime": 193,
+      "updateTime": null
+     },
+     "programType": null
+    },
+    {
+     "dayType": 5,
+     "deviceId": "X",
+     "id": "X",
+     "p1": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 80,
+      "id": "X",
+      "startTime": 70,
+      "updateTime": null
+     },
+     "p2": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 193,
+      "id": "X",
+      "startTime": 173,
+      "updateTime": null
+     },
+     "p3": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 195,
+      "id": "X",
+      "startTime": 193,
+      "updateTime": null
+     },
+     "programType": null
+    },
+    {
+     "dayType": 6,
+     "deviceId": "X",
+     "id": "X",
+     "p1": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 80,
+      "id": "X",
+      "startTime": 70,
+      "updateTime": null
+     },
+     "p2": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 193,
+      "id": "X",
+      "startTime": 173,
+      "updateTime": null
+     },
+     "p3": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 195,
+      "id": "X",
+      "startTime": 193,
+      "updateTime": null
+     },
+     "programType": null
+    }
+   ],
+   "deviceType": 4,
+   "icon": null,
+   "isonline": true,
+   "mac": "X",
+   "name": "Hot Water",
+   "pointDataList": [
+    {
+     "pointIndex": 3,
+     "value": "12"
+    },
+    {
+     "pointIndex": 4,
+     "value": "0"
+    },
+    {
+     "pointIndex": 5,
+     "value": "250"
+    },
+    {
+     "pointIndex": 6,
+     "value": "600"
+    },
+    {
+     "pointIndex": 7,
+     "value": "3"
+    },
+    {
+     "pointIndex": 8,
+     "value": "0"
+    },
+    {
+     "pointIndex": 9,
+     "value": "0"
+    },
+    {
+     "pointIndex": 10,
+     "value": "1"
+    },
+    {
+     "pointIndex": 11,
+     "value": "0"
+    },
+    {
+     "pointIndex": 13,
+     "value": "1"
+    },
+    {
+     "pointIndex": 14,
+     "value": "600"
+    },
+    {
+     "pointIndex": 15,
+     "value": "3014702"
+    },
+    {
+     "pointIndex": 16,
+     "value": "0"
+    },
+    {
+     "pointIndex": 17,
+     "value": "0"
+    },
+    {
+     "pointIndex": 18,
+     "value": "44958382"
+    }
+   ],
+   "productId": "X",
+   "systemType": "EMBER-PS",
+   "uid": "X",
+   "zoneid": "X"
+  },
+  {
+   "deviceDays": [
+    {
+     "dayType": 0,
+     "deviceId": "X",
+     "id": "X",
+     "p1": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "p2": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "p3": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "programType": null
+    },
+    {
+     "dayType": 1,
+     "deviceId": "X",
+     "id": "X",
+     "p1": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "p2": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "p3": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "programType": null
+    },
+    {
+     "dayType": 2,
+     "deviceId": "X",
+     "id": "X",
+     "p1": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "p2": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "p3": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "programType": null
+    },
+    {
+     "dayType": 3,
+     "deviceId": "X",
+     "id": "X",
+     "p1": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "p2": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "p3": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "programType": null
+    },
+    {
+     "dayType": 4,
+     "deviceId": "X",
+     "id": "X",
+     "p1": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "p2": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "p3": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "programType": null
+    },
+    {
+     "dayType": 5,
+     "deviceId": "X",
+     "id": "X",
+     "p1": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "p2": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "p3": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "programType": null
+    },
+    {
+     "dayType": 6,
+     "deviceId": "X",
+     "id": "X",
+     "p1": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "p2": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "p3": {
+      "createTime": null,
+      "delFlag": null,
+      "endTime": 0,
+      "id": "X",
+      "startTime": 0,
+      "updateTime": null
+     },
+     "programType": null
+    }
+   ],
+   "deviceType": 2,
+   "icon": null,
+   "isonline": true,
+   "mac": "X",
+   "name": "Radiators",
+   "pointDataList": [
+    {
+     "pointIndex": 3,
+     "value": "13"
+    },
+    {
+     "pointIndex": 4,
+     "value": "0"
+    },
+    {
+     "pointIndex": 5,
+     "value": "200"
+    },
+    {
+     "pointIndex": 6,
+     "value": "205"
+    },
+    {
+     "pointIndex": 7,
+     "value": "3"
+    },
+    {
+     "pointIndex": 8,
+     "value": "0"
+    },
+    {
+     "pointIndex": 9,
+     "value": "0"
+    },
+    {
+     "pointIndex": 10,
+     "value": "1"
+    },
+    {
+     "pointIndex": 11,
+     "value": "0"
+    },
+    {
+     "pointIndex": 13,
+     "value": "1"
+    },
+    {
+     "pointIndex": 14,
+     "value": "205"
+    },
+    {
+     "pointIndex": 15,
+     "value": "320057263"
+    },
+    {
+     "pointIndex": 16,
+     "value": "2906128384"
+    },
+    {
+     "pointIndex": 17,
+     "value": "660"
+    },
+    {
+     "pointIndex": 18,
+     "value": "720903"
+    }
+   ],
+   "productId": "X",
+   "systemType": "EMBER-PS",
+   "uid": "X",
+   "zoneid": "X"
+  }
+ ],
+ "message": "succ.",
+ "status": 0,
+ "timestamp": 1794511036381
+}
