@@ -1377,7 +1377,9 @@ class EphEmber:
         def on_connect(client, userdata, flags, reason_code, properties=None):
             # pylint: disable=unused-argument,too-many-arguments
             if getattr(reason_code, 'is_failure', False):
+                _LOGGER.debug("Ember live updates refused: %s", reason_code)
                 return
+            _LOGGER.debug("Ember live updates connected")
             for topic in topics:
                 client.subscribe(topic, 1)
 
