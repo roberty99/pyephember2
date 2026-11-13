@@ -13,7 +13,17 @@ Example basic usage
 
     >>> from pyephember2.pyephember2 import EphEmber
     >>> e = EphEmber('my@username.com', 'mypassword')
-    >>> e.get_zone_temperature("MyZone")
+    >>> zones = [z for home in e.get_zones() for z in home["zones"]]
+    >>> zoneid = zones[0]["zoneid"]
+    >>> e.get_zone_temperature(zoneid)
+    >>> e.set_zone_target_temperature(zoneid, 20.5)
+
+Schedules are stored in the home's local time. The API does not say which
+time zone that is, so the computer's local time zone is assumed. To set it
+explicitly:
+
+    >>> from zoneinfo import ZoneInfo
+    >>> e = EphEmber('my@username.com', 'mypassword', tz=ZoneInfo("Europe/Dublin"))
 
 API
 ---

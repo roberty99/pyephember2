@@ -5,6 +5,8 @@ import datetime
 import json
 from pathlib import Path
 
+from zoneinfo import ZoneInfo
+
 import pytest
 import requests
 
@@ -33,10 +35,15 @@ class FakeResponse:
 
 
 def load_fixture(name="ember_ps_zones.json"):
-    return json.loads((FIXTURES / name).read_text())
+    data = json.loads((FIXTURES / name).read_text())
+    # ids are anonymised to "X"; give each zone its own
+    for number, zone in enumerate(data["data"]):
+        zone["zoneid"] = "zone{}".format(number)
+    return data
 
 
-def make_ember(monkeypatch, zone_program, homes=None):
+def make_ember(monkeypatch, zone_program, homes=None,
+               tz=datetime.timezone.utc):
     """Build an EphEmber whose HTTP calls are answered from fixtures."""
     homes = homes or [{"gatewayid": "GW1", "name": "Home"}]
     calls = []
@@ -54,7 +61,7 @@ def make_ember(monkeypatch, zone_program, homes=None):
         raise AssertionError("unexpected endpoint " + endpoint)
 
     monkeypatch.setattr(EphEmber, "_http", fake_http)
-    ember = EphEmber("user", "pass")
+    ember = EphEmber("user", "pass", tz=tz)
     ember.calls = calls
     return ember
 
@@ -211,7 +218,7 @@ def test_set_zone_mode_command(monkeypatch):
         lambda zone, cmds, *a, **k: sent.append(cmds) or True,
     )
     ember.set_zone_mode(zoneid, ZoneMode.ON)
-    assert pe.zone_command_to_ints({"deviceType": 2}, sent[0]) == [0, 7, 1, 2]
+    assert pe.zone_command_to_ints({"deviceType": 2}, sent[0][0]) == [0, 7, 1, 2]
 
 
 # --- errors and auth ---------------------------------------------------------
@@ -245,3 +252,232 @@ def test_relogin_when_refresh_token_rejected(monkeypatch):
     ember.calls.clear()
     assert ember._do_auth()
     assert ember.calls == ["appLogin/login"]
+
+
+# --- schedules in local time ------------------------------------------------
+
+DUBLIN = ZoneInfo("Europe/Dublin")
+# 2026-07-15 is a Wednesday; 16:45 UTC is 17:45 Irish summer time
+WEDNESDAY_1645_UTC = int(
+    datetime.datetime(2026, 7, 15, 16, 45, tzinfo=datetime.timezone.utc)
+    .timestamp() * 1000
+)
+
+
+def auto_hot_water(monkeypatch, timestamp, tz):
+    data = load_fixture()
+    set_point(data, "Hot Water", 7, 0)  # AUTO
+    data["timestamp"] = timestamp
+    return zones_by_name(make_ember(monkeypatch, data, tz=tz))["Hot Water"]
+
+
+def test_schedule_uses_home_time_zone(monkeypatch):
+    """The 17:30-19:30 slot is running at 17:45 Irish summer time."""
+    zone = auto_hot_water(monkeypatch, WEDNESDAY_1645_UTC, DUBLIN)
+    assert pe.getZoneTime(zone) == [datetime.time(17, 45), 3]
+    assert pe.zone_is_scheduled_on(zone) is True
+
+
+def test_schedule_in_utc_is_an_hour_out(monkeypatch):
+    """What 0.4.13 did: 16:45 UTC is before the 17:30 slot starts."""
+    zone = auto_hot_water(monkeypatch, WEDNESDAY_1645_UTC,
+                          datetime.timezone.utc)
+    assert pe.getZoneTime(zone) == [datetime.time(16, 45), 3]
+    assert pe.zone_is_scheduled_on(zone) is False
+
+
+def test_day_type_wraps_to_sunday():
+    sunday = int(datetime.datetime(
+        2026, 11, 15, 12, 0, tzinfo=datetime.timezone.utc).timestamp() * 1000)
+    zone = {"timestamp": sunday, "tzinfo": datetime.timezone.utc}
+    assert pe.getZoneTime(zone)[1] == 0
+
+
+def test_local_time_used_without_tz(monkeypatch):
+    zone = {"timestamp": WEDNESDAY_1645_UTC}
+    local = datetime.datetime.fromtimestamp(WEDNESDAY_1645_UTC / 1000)
+    assert pe.getZoneTime(zone)[0] == datetime.time(local.hour, local.minute)
+
+
+# --- online state ------------------------------------------------------------
+
+def test_zone_is_online(monkeypatch):
+    data = load_fixture()
+    data["data"][1]["isonline"] = False
+    ember = make_ember(monkeypatch, data)
+    zones = zones_by_name(ember)
+    assert pe.zone_is_online(zones["Hot Water"]) is True
+    assert pe.zone_is_online(zones["Radiators"]) is False
+    assert ember.is_zone_online(zones["Radiators"]["zoneid"]) is False
+    assert pe.zone_is_online({}) is True
+
+
+# --- cache updated after commands --------------------------------------------
+
+def fake_sender(monkeypatch, ember, result=True):
+    sent = []
+    monkeypatch.setattr(
+        ember.messenger, "send_zone_commands",
+        lambda zone, cmds, *a, **k: sent.append(cmds) or result,
+    )
+    return sent
+
+
+def test_command_updates_cached_zone(monkeypatch):
+    ember = make_ember(monkeypatch, load_fixture())
+    radiators = zones_by_name(ember)["Radiators"]
+    zoneid = radiators["zoneid"]
+    fake_sender(monkeypatch, ember)
+
+    assert ember.set_zone_target_temperature(zoneid, 21.5)
+    assert ember.set_zone_mode(zoneid, ZoneMode.ON)
+    assert ember.activate_zone_boost(zoneid, boost_temperature=23, num_hours=2)
+
+    # the same dict callers (e.g. Home Assistant) already hold is updated
+    assert pe.zone_target_temperature(radiators) == 21.5
+    assert pe.zone_mode(radiators) == ZoneMode.ON
+    assert pe.zone_boost_hours(radiators) == 2
+    assert pe.zone_boost_temperature(radiators) == 23.0
+
+    # and the cloud is not asked again (it would still report the old values)
+    ember.calls.clear()
+    zones_by_name(ember)
+    assert ember.calls == []
+
+
+def test_cache_expires_after_settle_time(monkeypatch):
+    ember = make_ember(monkeypatch, load_fixture())
+    zoneid = zones_by_name(ember)["Radiators"]["zoneid"]
+    fake_sender(monkeypatch, ember)
+    ember.set_zone_target_temperature(zoneid, 21.5)
+
+    ember.NextHomeUpdateDaytime = datetime.datetime.now() - datetime.timedelta(seconds=1)
+    ember.calls.clear()
+    radiators = zones_by_name(ember)["Radiators"]
+    assert "homesVT/zoneProgram" in ember.calls
+    assert pe.zone_target_temperature(radiators) == 20.5
+
+
+def test_failed_command_leaves_cache_alone(monkeypatch):
+    ember = make_ember(monkeypatch, load_fixture())
+    radiators = zones_by_name(ember)["Radiators"]
+    fake_sender(monkeypatch, ember, result=False)
+    assert not ember.set_zone_target_temperature(radiators["zoneid"], 21.5)
+    assert pe.zone_target_temperature(radiators) == 20.5
+
+
+def test_apply_command_adds_missing_point():
+    zone = {"deviceType": 2, "pointDataList": []}
+    pe.zone_apply_commands(zone, ZoneCommand("TARGET_TEMP", 19))
+    assert zone["pointDataList"] == [{"pointIndex": 6, "value": "190"}]
+
+
+def test_temperature_rounding():
+    """20.1 * 10 is 200.99999; it must be sent as 201."""
+    assert pe.zone_command_to_ints(
+        {"deviceType": 2}, ZoneCommand("TARGET_TEMP", 20.1)) == [0, 6, 4, 0, 201]
+
+
+# --- MQTT ---------------------------------------------------------------------
+
+class FakeMqttClient:
+    """Stands in for paho's Client; connects (or refuses) on loop_start."""
+
+    instances = []
+
+    def __init__(self, *args, refuse=False, **kwargs):
+        self.refuse = refuse
+        self.connected = False
+        self.loop_running = False
+        self.published = []
+        self.on_connect = None
+        self.closed = False
+        FakeMqttClient.instances.append(self)
+
+    def tls_set(self):
+        pass
+
+    def username_pw_set(self, user, password):
+        pass
+
+    def connect(self, host, port):
+        pass
+
+    def loop_start(self):
+        self.loop_running = True
+        reason = FakeReason(self.refuse)
+        self.connected = not self.refuse
+        self.on_connect(self, None, None, reason, None)
+
+    def loop_stop(self):
+        self.loop_running = False
+
+    def is_connected(self):
+        return self.connected
+
+    def disconnect(self):
+        self.connected = False
+
+    def socket(self):
+        return None
+
+    def publish(self, topic, msg, qos):
+        self.published.append((topic, json.loads(msg)))
+        return FakePublish()
+
+
+class FakeReason:
+    def __init__(self, failure):
+        self.is_failure = failure
+
+    def __str__(self):
+        return "Not authorized" if self.is_failure else "Success"
+
+
+class FakePublish:
+    def wait_for_publish(self, timeout):
+        pass
+
+    def is_published(self):
+        return True
+
+
+def test_mqtt_command_waits_for_connection_and_disconnects(monkeypatch):
+    ember = make_ember(monkeypatch, load_fixture())
+    monkeypatch.setattr(ember, "_get_user_id", lambda force=False: "42")
+    FakeMqttClient.instances.clear()
+    monkeypatch.setattr(pe.mqtt, "Client", FakeMqttClient)
+    zone = zones_by_name(ember)["Radiators"]
+
+    assert ember.set_zone_target_temperature(zone["zoneid"], 21)
+    client = FakeMqttClient.instances[-1]
+    topic, msg = client.published[0]
+    assert topic.endswith("/download/pointdata")
+    assert msg["data"]["pointData"] == "AAYEANI="  # [0, 6, 4, 0, 210]
+    assert not client.connected and not client.loop_running
+
+
+def test_mqtt_refused_raises(monkeypatch):
+    ember = make_ember(monkeypatch, load_fixture())
+    monkeypatch.setattr(ember, "_get_user_id", lambda force=False: "42")
+    monkeypatch.setattr(
+        pe.mqtt, "Client",
+        lambda *a, **k: FakeMqttClient(refuse=True))
+    zone = zones_by_name(ember)["Radiators"]
+
+    with pytest.raises(pe.EphEmberError, match="Not authorized"):
+        ember.set_zone_target_temperature(zone["zoneid"], 21)
+    assert pe.zone_target_temperature(zone) == 20.5
+
+
+def test_mqtt_connect_error_raises(monkeypatch):
+    class Unreachable(FakeMqttClient):
+        def connect(self, host, port):
+            raise OSError("Network is unreachable")
+
+    ember = make_ember(monkeypatch, load_fixture())
+    monkeypatch.setattr(ember, "_get_user_id", lambda force=False: "42")
+    monkeypatch.setattr(pe.mqtt, "Client", Unreachable)
+    zone = zones_by_name(ember)["Radiators"]
+    with pytest.raises(pe.EphEmberError, match="unreachable"):
+        ember.set_zone_target_temperature(zone["zoneid"], 21)

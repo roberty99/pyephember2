@@ -108,57 +108,93 @@ ZoneCommand = collections.namedtuple(
 )
 
 
-def zone_command_to_ints(zone, command):
+_COMMAND_TYPE_DATA = {
+    'SMALL_INT': {'id': 1, 'byte_len': 1},
+    'TEMP_RO': {'id': 2, 'byte_len': 2},
+    'TEMP_RW': {'id': 4, 'byte_len': 2},
+    'TIMESTAMP': {'id': 5, 'byte_len': 4}
+}
+
+_WRITABLE_COMMAND_TYPES = {
+    'ADVANCE_ACTIVE': 'SMALL_INT',
+    'TARGET_TEMP': 'TEMP_RW',
+    'MODE': 'SMALL_INT',
+    'BOOST_HOURS': 'SMALL_INT',
+    'BOOST_TIME': 'TIMESTAMP',
+    'BOOST_TEMP': 'TEMP_RW'
+}
+
+
+def zone_command_point(zone, command):
     """
-    Convert a ZoneCommand to an array of integers to send
+    Return (command_type, point_index, raw_value) for a ZoneCommand:
+    the point it writes and the integer value as the API stores it.
     """
-    type_data = {
-        'SMALL_INT': {'id': 1, 'byte_len': 1},
-        'TEMP_RO': {'id': 2, 'byte_len': 2},
-        'TEMP_RW': {'id': 4, 'byte_len': 2},
-        'TIMESTAMP': {'id': 5, 'byte_len': 4}
-    }
-    writable_command_types = {
-        'ADVANCE_ACTIVE': 'SMALL_INT',
-        'TARGET_TEMP': 'TEMP_RW',
-        'MODE': 'SMALL_INT',
-        'BOOST_HOURS': 'SMALL_INT',
-        'BOOST_TIME': 'TIMESTAMP',
-        'BOOST_TEMP': 'TEMP_RW'
-    }
-    if command.name not in writable_command_types:
+    if command.name not in _WRITABLE_COMMAND_TYPES:
         raise ValueError(
             "Cannot write to read-only value "
             "{}".format(command.name)
         )
-    
-    command_type = writable_command_types[command.name]
+
+    command_type = _WRITABLE_COMMAND_TYPES[command.name]
 
     if command.index is not None:
         command_index = command.index
     else:
         command_index = GetPointIndex(zone, PointIndex[command.name])
 
-    # command header: [0, index, type_id]
-    int_array = [0, command_index, type_data[command_type]['id']]
-
-    # now encode and append the value
     send_value = command.value
     if command_type == 'TEMP_RW':
         # The thermostat uses tenths of a degree;
         # send_value is given in degrees, so we convert.
-        send_value = int(10*send_value)
+        send_value = int(round(10 * send_value))
     elif command_type == 'TIMESTAMP':
         # send_value can be either an int representing a Unix timestamp,
         # or a datetime. Convert if a datetime.
         if isinstance(command.value, datetime.datetime):
             send_value = int(command.value.timestamp())
+    else:
+        send_value = int(send_value)
 
-    for byte_value in send_value.to_bytes(
-            type_data[command_type]['byte_len'], 'big'):
+    return command_type, command_index, send_value
+
+
+def zone_command_to_ints(zone, command):
+    """
+    Convert a ZoneCommand to an array of integers to send
+    """
+    command_type, command_index, send_value = zone_command_point(
+        zone, command
+    )
+    type_data = _COMMAND_TYPE_DATA[command_type]
+
+    # command header: [0, index, type_id]
+    int_array = [0, command_index, type_data['id']]
+
+    # now encode and append the value
+    for byte_value in send_value.to_bytes(type_data['byte_len'], 'big'):
         int_array.append(int(byte_value))
 
     return int_array
+
+
+def zone_apply_commands(zone, commands):
+    """
+    Update a zone's cached pointDataList with the values of commands that
+    have been sent, so the new state can be read straight away instead of
+    after the Ember cloud has caught up.
+    """
+    if isinstance(commands, ZoneCommand):
+        commands = [commands]
+    points = zone.setdefault('pointDataList', [])
+    for command in commands:
+        _, index, value = zone_command_point(zone, command)
+        for datum in points:
+            if datum['pointIndex'] == index:
+                datum['value'] = str(value)
+                break
+        else:
+            points.append({'pointIndex': index, 'value': str(value)})
 
 
 def zone_is_active(zone):
@@ -227,11 +263,24 @@ def scheduletime_to_time(dict, key_name):
     return datetime.time(hours, 10 * tens_of_minutes)
 
 def getZoneTime(zone):
-    tstamp = time.gmtime(zone["timestamp"] / 1000)
-    ts_time = datetime.time(tstamp.tm_hour, tstamp.tm_min)
-    ts_wday = tstamp.tm_wday + 1
-    if ts_wday == 7:
-        ts_wday = 0
+    """
+    Return [time, dayType] of the zone's data timestamp in the home's
+    local time, because schedules are stored in local time.
+    dayType 0 is Sunday.
+
+    The Ember API does not report the home's time zone, so this uses
+    zone["tzinfo"] (set from EphEmber's tz argument) or, if that is
+    missing, the local time zone of this computer.
+    """
+    seconds = zone["timestamp"] / 1000
+    tzinfo = zone.get("tzinfo")
+    if tzinfo is None:
+        local = datetime.datetime.fromtimestamp(seconds)
+    else:
+        local = datetime.datetime.fromtimestamp(seconds, tzinfo)
+    ts_time = datetime.time(local.hour, local.minute)
+    # weekday(): Monday is 0; Ember dayType: Sunday is 0
+    ts_wday = (local.weekday() + 1) % 7
     return [ts_time, ts_wday]
 
 
@@ -346,6 +395,14 @@ def zone_name(zone):
     Get zone name
     """
     return zone["name"]
+
+
+def zone_is_online(zone):
+    """
+    Is the zone's device connected to the Ember cloud?
+    Zones without the isonline field are assumed to be online.
+    """
+    return zone.get("isonline") is not False
 
 
 def zone_is_boost_active(zone):
@@ -530,23 +587,63 @@ class EphMessenger:
         started_locally = False
         if not self.client or not self.client.is_connected():
             started_locally = True
-            self.start()
+            self.start(loop_start=True)
 
-        pub = self.client.publish(
-            "/".join([product_id, uid, "download/pointdata"]), msg, 0
-        )
-        pub.wait_for_publish(timeout=timeout)
+        try:
+            if not self.wait_for_connection(self.connect_timeout):
+                raise EphEmberError(
+                    "Ember MQTT broker did not accept the connection: "
+                    "{}".format(self._connect_result or "timed out")
+                )
 
-        if started_locally and stop_mqtt:
-            self.stop()
+            pub = self.client.publish(
+                "/".join([product_id, uid, "download/pointdata"]), msg, 0
+            )
+            pub.wait_for_publish(timeout=timeout)
+            published = pub.is_published()
+        finally:
+            if started_locally and stop_mqtt:
+                self.stop()
 
-        return pub.is_published()
+        return published
+
+    def _on_connect(self, client, userdata, flags, reason_code,
+                    properties=None):
+        """
+        Record the broker's answer to our connection request
+        """
+        # pylint: disable=unused-argument,too-many-arguments
+        self._connect_result = reason_code
+        if self._user_on_connect is not None:
+            self._user_on_connect(
+                client, userdata, flags, reason_code, properties
+            )
 
     # Public interface
 
+    def wait_for_connection(self, timeout=10):
+        """
+        Wait until the broker has accepted the connection started by
+        start(loop_start=True). Returns False if it refused the
+        connection (e.g. a rejected token) or did not answer in time.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.client.is_connected():
+                return True
+            result = self._connect_result
+            if result is not None and getattr(result, 'is_failure', False):
+                return False
+            time.sleep(0.05)
+        return self.client.is_connected()
+
     def start(self, callbacks=None, loop_start=False):
         """
-        Start MQTT client
+        Start MQTT client.
+
+        Pass loop_start=True to run the network loop in a background
+        thread; the connection is not usable until the broker has
+        accepted it (see wait_for_connection).
         """
         credentials = self.parent.messenging_credentials()
         self.client_id = '{}_{}'.format(
@@ -557,15 +654,25 @@ class EphMessenger:
         mclient = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, self.client_id)
         mclient.tls_set()
         self.client = mclient
+        self._connect_result = None
+        self._user_on_connect = None
 
         user_name = "app/{}".format(token)
         mclient.username_pw_set(user_name, token)
 
         if callbacks is not None:
+            callbacks = dict(callbacks)
+            self._user_on_connect = callbacks.pop('on_connect', None)
             for key in callbacks.keys():
                 setattr(mclient, key, callbacks[key])
+        mclient.on_connect = self._on_connect
 
-        mclient.connect(self.api_url, self.api_port)
+        try:
+            mclient.connect(self.api_url, self.api_port)
+        except (OSError, ValueError) as err:
+            raise EphEmberError(
+                "Cannot connect to Ember MQTT broker: {}".format(err)
+            ) from err
 
         if loop_start:
             mclient.loop_start()
@@ -574,12 +681,19 @@ class EphMessenger:
 
     def stop(self):
         """
-        Disconnect MQTT client if connected
+        Disconnect the MQTT client and stop its network loop
         """
         if not self.client:
             return False
-        if self.client.is_connected():
-            self.client.disconnect()
+        client = self.client
+        try:
+            client.disconnect()
+        finally:
+            client.loop_stop()
+            # without a running loop, disconnect() does not close the socket
+            sock = client.socket()
+            if sock is not None:
+                sock.close()
         return True
 
     def send_zone_commands(self, zone, commands, stop_mqtt=True, timeout=1):
@@ -618,6 +732,9 @@ class EphMessenger:
 
         self.client = None
         self.client_id = None
+        self.connect_timeout = 10
+        self._connect_result = None
+        self._user_on_connect = None
 
         self.parent = parent
 
@@ -780,16 +897,34 @@ class EphEmber:
             raise RuntimeError("Cannot get gateway id from list of homes.")
         return self._homes[0]['gatewayid']
 
+    def _send_zone_commands(self, zone, commands):
+        """
+        Send commands to a zone. If they were sent, update the cached zone
+        with the new values and keep serving the cache for a short while,
+        because the Ember cloud takes some seconds to report the change
+        and would otherwise return the old values.
+        """
+        if isinstance(commands, ZoneCommand):
+            commands = [commands]
+        sent = self.messenger.send_zone_commands(zone, commands)
+        if sent:
+            zone_apply_commands(zone, commands)
+            hold_until = datetime.datetime.now() + datetime.timedelta(
+                seconds=self.command_settle_seconds
+            )
+            if (self.NextHomeUpdateDaytime is None
+                    or self.NextHomeUpdateDaytime < hold_until):
+                self.NextHomeUpdateDaytime = hold_until
+        return sent
+
     def _set_zone_target_temperature(self, zone, target_temperature):
-        return self.messenger.send_zone_commands(
-            zone,
-            ZoneCommand('TARGET_TEMP', target_temperature, GetPointIndex(zone, PointIndex.TARGET_TEMP))
+        return self._send_zone_commands(
+            zone, ZoneCommand('TARGET_TEMP', target_temperature)
         )
 
     def _set_zone_boost_temperature(self, zone, target_temperature):
-        return self.messenger.send_zone_commands(
-            zone,
-            ZoneCommand('BOOST_TEMP', target_temperature, None)
+        return self._send_zone_commands(
+            zone, ZoneCommand('BOOST_TEMP', target_temperature)
         )
 
     def _set_zone_advance(self, zone, advance=True):
@@ -797,9 +932,8 @@ class EphEmber:
             advance = 1
         else:
             advance = 0
-        return self.messenger.send_zone_commands(
-            zone,
-            ZoneCommand('ADVANCE_ACTIVE', advance, None)
+        return self._send_zone_commands(
+            zone, ZoneCommand('ADVANCE_ACTIVE', advance)
         )
 
     def _set_zone_boost(self, zone, boost_temperature, num_hours, timestamp=0):
@@ -822,10 +956,10 @@ class EphEmber:
             if timestamp == 0:
                 timestamp = int(datetime.datetime.now().timestamp())
             cmds.append(ZoneCommand('BOOST_TIME', timestamp, None))
-        return self.messenger.send_zone_commands(zone, cmds)
+        return self._send_zone_commands(zone, cmds)
 
     def _set_zone_mode(self, zone, mode_num, index):
-        return self.messenger.send_zone_commands(
+        return self._send_zone_commands(
             zone, ZoneCommand('MODE', mode_num, index)
         )
 
@@ -836,7 +970,7 @@ class EphEmber:
         Credentials required by EphMessenger
         """
         if not self._do_auth():
-            raise RuntimeError("Unable to login")
+            raise EphEmberError("Unable to login")
 
         return {
             'user_id': self._get_user_id(),
@@ -971,6 +1105,7 @@ class EphEmber:
                         nextProgram = program
 
                 zone["timestamp"] = homezones["timestamp"]
+                zone["tzinfo"] = self.tz
                 home["zones"].append(zone)
 
         self.NextHomeUpdateDaytime = datetime.datetime.now() + datetime.timedelta(
@@ -1016,6 +1151,12 @@ class EphEmber:
         """
         zone = self.get_zone(zoneid)
         return zone_is_active(zone)
+
+    def is_zone_online(self, zoneid):
+        """
+        Check if a zone's device is connected to the Ember cloud
+        """
+        return zone_is_online(self.get_zone(zoneid))
 
     def is_zone_boiler_on(self, zoneid):
         """
@@ -1064,14 +1205,21 @@ class EphEmber:
         Get the timestamp recorded for the boost
         """
         zone = self.get_zone(zoneid)
-        return datetime.datetime.fromtimestamp(zone_boost_timestamp(zone))
+        timestamp = zone_boost_timestamp(zone)
+        if timestamp is None:
+            return None
+        return datetime.datetime.fromtimestamp(timestamp)
 
     def is_target_temperature_reached(self, zoneid):
         """
         Check if a zone temperature has reached the target temperature
         """
         zone = self.get_zone(zoneid)
-        return zone_current_temperature(zone) >= zone_target_temperature(zone)
+        current = zone_current_temperature(zone)
+        target = zone_target_temperature(zone)
+        if current is None or target is None:
+            return None
+        return current >= target
 
     def set_zone_target_temperature(self, zoneid, target_temperature):
         """
@@ -1136,9 +1284,7 @@ class EphEmber:
         modevalue = get_zone_mode_value(zone, mode)
         modeindex = GetPointIndex(zone, PointIndex.MODE)
 
-        return self._set_zone_mode(
-            self.get_zone(zoneid), modevalue, modeindex
-        )
+        return self._set_zone_mode(zone, modevalue, modeindex)
 
     def get_zone_mode(self, zoneid):
         """
@@ -1154,8 +1300,15 @@ class EphEmber:
         self._login_data = None
 
     # Ctor
-    def __init__(self, username, password, cache_home=False):
-        """Performs login and save session cookie."""
+    def __init__(self, username, password, cache_home=False, tz=None):
+        """
+        Performs login and save session cookie.
+
+        tz is the home's time zone (a datetime.tzinfo such as
+        zoneinfo.ZoneInfo("Europe/Dublin")), used to work out which
+        schedule slot is running. If None, this computer's local time
+        zone is used.
+        """
 
         if cache_home:
             raise RuntimeError("cache_home not implemented")
@@ -1173,6 +1326,11 @@ class EphEmber:
         self._home_details = None
 
         self.NextHomeUpdateDaytime = None
+
+        # After a command, serve cached (updated) zone data for this long
+        self.command_settle_seconds = 30
+
+        self.tz = tz
 
         self._refresh_token_validity_seconds = 1800
 
