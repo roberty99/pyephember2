@@ -561,28 +561,25 @@ class EphMessenger:
     MQTT interface to the EphEmber API
     """
 
-    def _zone_command_b64(self, zone, cmd, stop_mqtt=True, timeout=1):
+    def _next_serial(self, timestamp):
+        """
+        Message serial number. The Ember app uses the last six digits of
+        the timestamp; a repeated serial looks like a duplicate message and
+        can be ignored, so never reuse the previous one.
+        """
+        serial = timestamp % 1000000
+        if serial == self._last_serial:
+            serial = (serial + 1) % 1000000
+        self._last_serial = serial
+        return serial
+
+    def _zone_command_b64(self, zone, cmd, stop_mqtt=True, timeout=5):
         """
         Send a base64-encoded MQTT command to a zone
-        Returns true if the command was published within the timeout
+        Returns true if the broker acknowledged the command within the timeout
         """
         product_id = zone["productId"]
         uid = zone["uid"]
-
-        msg = json.dumps(
-            {
-                "common": {
-                    "serial": 7870,
-                    "productId": product_id,
-                    "uid": uid,
-                    "timestamp": str(int(1000*time.time()))
-                },
-                "data": {
-                    "mac": zone['mac'],
-                    "pointData": cmd
-                }
-            }
-        )
 
         started_locally = False
         if not self.client or not self.client.is_connected():
@@ -596,8 +593,26 @@ class EphMessenger:
                     "{}".format(self._connect_result or "timed out")
                 )
 
+            timestamp = int(1000 * time.time())
+            msg = json.dumps(
+                {
+                    "common": {
+                        "serial": self._next_serial(timestamp),
+                        "productId": product_id,
+                        "uid": uid,
+                        "timestamp": timestamp,
+                        "userId": self.user_id
+                    },
+                    "data": {
+                        "mac": zone['mac'],
+                        "pointData": cmd
+                    }
+                }
+            )
+
+            # QoS 1 like the Ember app: the broker acknowledges the message
             pub = self.client.publish(
-                "/".join([product_id, uid, "download/pointdata"]), msg, 0
+                "/".join([product_id, uid, "download/pointdata"]), msg, 1
             )
             pub.wait_for_publish(timeout=timeout)
             published = pub.is_published()
@@ -646,6 +661,7 @@ class EphMessenger:
         accepted it (see wait_for_connection).
         """
         credentials = self.parent.messenging_credentials()
+        self.user_id = credentials['user_id']
         self.client_id = '{}_{}'.format(
             credentials['user_id'], str(int(1000*time.time()))
         )
@@ -696,14 +712,14 @@ class EphMessenger:
                 sock.close()
         return True
 
-    def send_zone_commands(self, zone, commands, stop_mqtt=True, timeout=1):
+    def send_zone_commands(self, zone, commands, stop_mqtt=True, timeout=5):
         """
         Bundles the given array of ZoneCommand objects
         to a single MQTT command and sends to the named zone.
 
         If a single ZoneCommand is given, send just that.
 
-        Returns true if the bundled command was published within the timeout.
+        Returns true if the broker acknowledged the command within the timeout.
 
         For example, to set target temperature to 19:
 
@@ -733,6 +749,8 @@ class EphMessenger:
         self.client = None
         self.client_id = None
         self.connect_timeout = 10
+        self.user_id = None
+        self._last_serial = None
         self._connect_result = None
         self._user_on_connect = None
 

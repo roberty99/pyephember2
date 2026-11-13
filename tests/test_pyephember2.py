@@ -422,7 +422,7 @@ class FakeMqttClient:
         return None
 
     def publish(self, topic, msg, qos):
-        self.published.append((topic, json.loads(msg)))
+        self.published.append((topic, json.loads(msg), qos))
         return FakePublish()
 
 
@@ -451,10 +451,32 @@ def test_mqtt_command_waits_for_connection_and_disconnects(monkeypatch):
 
     assert ember.set_zone_target_temperature(zone["zoneid"], 21)
     client = FakeMqttClient.instances[-1]
-    topic, msg = client.published[0]
+    topic, msg, qos = client.published[0]
     assert topic.endswith("/download/pointdata")
     assert msg["data"]["pointData"] == "AAYEANI="  # [0, 6, 4, 0, 210]
     assert not client.connected and not client.loop_running
+
+    # sent like the Ember app: acknowledged, with the user ID and a serial
+    # taken from the timestamp
+    assert qos == 1
+    assert msg["common"]["userId"] == "42"
+    assert msg["common"]["serial"] == msg["common"]["timestamp"] % 1000000
+
+
+def test_mqtt_serial_never_repeats(monkeypatch):
+    """The gateway can ignore a repeated serial as a duplicate message."""
+    ember = make_ember(monkeypatch, load_fixture())
+    monkeypatch.setattr(ember, "_get_user_id", lambda force=False: "42")
+    FakeMqttClient.instances.clear()
+    monkeypatch.setattr(pe.mqtt, "Client", FakeMqttClient)
+    monkeypatch.setattr(pe.time, "time", lambda: 1794551000.123)
+    zoneid = zones_by_name(ember)["Radiators"]["zoneid"]
+
+    ember.set_zone_target_temperature(zoneid, 21.5)
+    ember.set_zone_target_temperature(zoneid, 21)
+    serials = [c.published[0][1]["common"]["serial"]
+               for c in FakeMqttClient.instances]
+    assert serials == [123, 124]
 
 
 def test_mqtt_refused_raises(monkeypatch):
