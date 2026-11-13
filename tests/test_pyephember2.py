@@ -1,9 +1,11 @@
 """Tests for pyephember2 using recorded (anonymised) API data."""
 
+import base64
 import copy
 import datetime
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from zoneinfo import ZoneInfo
 
@@ -398,10 +400,20 @@ class FakeMqttClient:
         pass
 
     def username_pw_set(self, user, password):
-        pass
+        self.credentials = (user, password)
 
     def connect(self, host, port):
         pass
+
+    def connect_async(self, host, port):
+        pass
+
+    def reconnect_delay_set(self, min_delay, max_delay):
+        self.reconnect_delay = (min_delay, max_delay)
+
+    def subscribe(self, topic, qos):
+        self.subscribed = getattr(self, "subscribed", []) + [(topic, qos)]
+        return 0, 1
 
     def loop_start(self):
         self.loop_running = True
@@ -503,3 +515,84 @@ def test_mqtt_connect_error_raises(monkeypatch):
     zone = zones_by_name(ember)["Radiators"]
     with pytest.raises(pe.EphEmberError, match="unreachable"):
         ember.set_zone_target_temperature(zone["zoneid"], 21)
+
+
+# --- live updates -------------------------------------------------------------
+
+def report(mac, points, padding="\x00\x00"):
+    """An upload/pointdata message as the gateway sends it."""
+    raw = bytes(b for index, type_id, value in points
+                for b in [0, index, type_id]
+                + list(value.to_bytes(pe._POINT_TYPE_SIZES[type_id], "big")))
+    return (json.dumps({
+        "common": {"serial": 281, "productId": "P", "uid": "U",
+                   "timestamp": 2086344762},
+        "data": {"mac": mac, "pointData": base64.b64encode(raw).decode()},
+    }) + padding).encode()
+
+
+def test_parse_point_data():
+    # recorded from an EMBER-PS gateway: target 21.5, then counters
+    assert pe.parse_point_data("AAYEANcADwUTE6+vABAFvUAAAA==") == [
+        (6, 215), (15, 320057263), (16, 3175088128)]
+
+
+def test_parse_point_data_stops_at_unknown_type():
+    raw = base64.b64encode(bytes([0, 6, 4, 0, 215, 0, 7, 9, 1])).decode()
+    assert pe.parse_point_data(raw) == [(6, 215)]
+
+
+def listening_ember(monkeypatch):
+    data = load_fixture()
+    for number, zone in enumerate(data["data"]):
+        zone["mac"] = "mac{}".format(number)
+        zone["productId"], zone["uid"] = "P", "U"
+    ember = make_ember(monkeypatch, data)
+    monkeypatch.setattr(ember, "_get_user_id", lambda force=False: "42")
+    FakeMqttClient.instances.clear()
+    monkeypatch.setattr(pe.mqtt, "Client", FakeMqttClient)
+    updates = []
+    ember.start_listening(updates.append)
+    return ember, FakeMqttClient.instances[-1], updates
+
+
+def test_live_updates(monkeypatch):
+    ember, client, updates = listening_ember(monkeypatch)
+    assert client.subscribed == [("P/U/upload/pointdata", 1)]
+    assert client.loop_running and ember.is_listening()
+
+    radiators = zones_by_name(ember)["Radiators"]
+    message = SimpleNamespace(payload=report(
+        radiators["mac"], [(6, 4, 220), (5, 2, 188), (10, 1, 2)]))
+    client.on_message(client, None, message)
+
+    assert updates == [radiators]
+    assert pe.zone_target_temperature(radiators) == 22.0
+    assert pe.zone_current_temperature(radiators) == 18.8
+    assert pe.boiler_state(radiators) == 2
+
+
+def test_live_updates_ignore_unknown_and_bad_messages(monkeypatch):
+    ember, client, updates = listening_ember(monkeypatch)
+    for payload in (report("other", [(6, 4, 220)]), b"not json",
+                    b'{"data": {}}'):
+        client.on_message(client, None, SimpleNamespace(payload=payload))
+    assert updates == []
+
+
+def test_live_updates_reconnect_with_fresh_token(monkeypatch):
+    ember, client, updates = listening_ember(monkeypatch)
+    monkeypatch.setattr(ember, "messenging_credentials",
+                        lambda: {"user_id": "42", "token": "new"})
+    client.on_disconnect(client, None, None, FakeReason(True), None)
+    assert client.credentials == ("app/new", "new")
+
+
+def test_stop_listening(monkeypatch):
+    ember, client, updates = listening_ember(monkeypatch)
+    ember.stop_listening()
+    assert not client.loop_running and not ember.is_listening()
+    # a disconnect caused by stopping does not log in again
+    monkeypatch.setattr(ember, "messenging_credentials",
+                        lambda: pytest.fail("should not refresh"))
+    client.on_disconnect(client, None, None, FakeReason(False), None)

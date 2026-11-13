@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Live updates: `EphEmber.start_listening(callback)` keeps an MQTT
+  connection open and listens to the reports the gateway sends whenever
+  something changes (from this library, the Ember app or the thermostat).
+  Each report updates the cached zone and calls `callback(zone)` from a
+  background thread. It reconnects with a fresh token if the connection
+  drops. `stop_listening()` and `is_listening()` go with it, plus
+  `parse_point_data()` to decode MQTT point data.
 - Commands are sent like the Ember app sends them: a serial number that
   changes with every message (it was always 7870, so the gateway could drop
   repeated commands as duplicates), the user ID, and MQTT QoS 1 so the

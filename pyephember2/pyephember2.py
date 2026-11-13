@@ -6,6 +6,8 @@ PyEphEmber interface implementation for https://ember.ephcontrols.com/
 import base64
 import datetime
 import json
+import logging
+import threading
 import time
 import collections
 
@@ -14,6 +16,8 @@ from typing import OrderedDict
 
 import requests
 import paho.mqtt.client as mqtt
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class EphEmberError(RuntimeError):
@@ -186,15 +190,47 @@ def zone_apply_commands(zone, commands):
     """
     if isinstance(commands, ZoneCommand):
         commands = [commands]
-    points = zone.setdefault('pointDataList', [])
-    for command in commands:
-        _, index, value = zone_command_point(zone, command)
-        for datum in points:
+    zone_apply_points(
+        zone, [zone_command_point(zone, command)[1:] for command in commands]
+    )
+
+
+def parse_point_data(point_data):
+    """
+    Decode base64 pointData (as sent in MQTT messages) into a list of
+    (point_index, value) tuples. Each point is [0, index, type, value...],
+    the value being 1, 2 or 4 bytes long depending on the type.
+    """
+    raw = base64.b64decode(point_data)
+    points = []
+    position = 0
+    while position + 3 <= len(raw):
+        index, type_id = raw[position + 1], raw[position + 2]
+        size = _POINT_TYPE_SIZES.get(type_id)
+        if size is None or position + 3 + size > len(raw):
+            # unknown type: the remaining points cannot be located
+            break
+        value = int.from_bytes(raw[position + 3:position + 3 + size], 'big')
+        points.append((index, value))
+        position += 3 + size
+    return points
+
+
+_POINT_TYPE_SIZES = {1: 1, 2: 2, 4: 2, 5: 4}
+
+
+def zone_apply_points(zone, points):
+    """
+    Store (point_index, value) tuples in a zone's pointDataList
+    """
+    data = zone.setdefault('pointDataList', [])
+    for index, value in points:
+        for datum in data:
             if datum['pointIndex'] == index:
                 datum['value'] = str(value)
                 break
         else:
-            points.append({'pointIndex': index, 'value': str(value)})
+            data.append({'pointIndex': index, 'value': str(value)})
 
 
 def zone_is_active(zone):
@@ -652,13 +688,16 @@ class EphMessenger:
             time.sleep(0.05)
         return self.client.is_connected()
 
-    def start(self, callbacks=None, loop_start=False):
+    def start(self, callbacks=None, loop_start=False, connect_async=False):
         """
         Start MQTT client.
 
         Pass loop_start=True to run the network loop in a background
         thread; the connection is not usable until the broker has
         accepted it (see wait_for_connection).
+
+        With connect_async=True the connection is made by the network loop,
+        which keeps retrying until the broker can be reached.
         """
         credentials = self.parent.messenging_credentials()
         self.user_id = credentials['user_id']
@@ -684,7 +723,10 @@ class EphMessenger:
         mclient.on_connect = self._on_connect
 
         try:
-            mclient.connect(self.api_url, self.api_port)
+            if connect_async:
+                mclient.connect_async(self.api_url, self.api_port)
+            else:
+                mclient.connect(self.api_url, self.api_port)
         except (OSError, ValueError) as err:
             raise EphEmberError(
                 "Cannot connect to Ember MQTT broker: {}".format(err)
@@ -871,14 +913,16 @@ class EphEmber:
         """
         Do authentication to the system (if required)
         """
-        if self._login_data is None:
+        # the live update listener refreshes the token from its own thread
+        with self._auth_lock:
+            if self._login_data is None:
+                return self._login()
+
+            if self._request_token():
+                return True
+
+            # refresh token rejected or expired: log in again from scratch
             return self._login()
-
-        if self._request_token():
-            return True
-
-        # refresh token rejected or expired: log in again from scratch
-        return self._login()
 
     def _get_user_details(self):
         """
@@ -1311,6 +1355,103 @@ class EphEmber:
         zone = self.get_zone(zoneid)
         return zone_mode(zone)
 
+    def start_listening(self, callback):
+        """
+        Receive live updates. Keeps an MQTT connection open to the Ember
+        cloud and listens to the reports from the gateway (new target
+        temperature, current temperature, mode, boiler state...), whether
+        they come from this library, the Ember app or the thermostat.
+
+        Each report updates the cached zone (as returned by get_zones /
+        get_zone) and then calls callback(zone) from a background thread.
+        The connection is re-established, with a fresh token, if it drops.
+        """
+        self.stop_listening()
+        homes = self.get_zones()
+        topics = sorted({
+            "{}/{}/upload/pointdata".format(zone['productId'], zone['uid'])
+            for home in homes for zone in home['zones']
+        })
+        listener = EphMessenger(self)
+
+        def on_connect(client, userdata, flags, reason_code, properties=None):
+            # pylint: disable=unused-argument,too-many-arguments
+            if getattr(reason_code, 'is_failure', False):
+                return
+            for topic in topics:
+                client.subscribe(topic, 1)
+
+        def on_disconnect(client, userdata, flags, reason_code,
+                          properties=None):
+            # pylint: disable=unused-argument,too-many-arguments
+            if self._listener is not listener:
+                return  # stop_listening() was called
+            _LOGGER.debug("Ember live updates disconnected: %s", reason_code)
+            # the token may have expired; reconnect with a fresh one
+            try:
+                credentials = self.messenging_credentials()
+            except RuntimeError as err:
+                _LOGGER.debug("Cannot refresh Ember token: %s", err)
+                return
+            client.username_pw_set(
+                "app/{}".format(credentials['token']), credentials['token']
+            )
+
+        def on_message(client, userdata, message):
+            # pylint: disable=unused-argument
+            try:
+                zone = self._apply_report(message.payload)
+            except (ValueError, KeyError, TypeError) as err:
+                _LOGGER.debug("Ignoring Ember report %r: %s",
+                              message.payload[:200], err)
+                return
+            if zone is not None:
+                callback(zone)
+
+        self._listener = listener
+        client = listener.start(callbacks={
+            'on_connect': on_connect,
+            'on_disconnect': on_disconnect,
+            'on_message': on_message,
+        }, connect_async=True)
+        client.reconnect_delay_set(min_delay=5, max_delay=300)
+        client.loop_start()
+
+    def stop_listening(self):
+        """
+        Stop receiving live updates
+        """
+        listener, self._listener = self._listener, None
+        if listener is not None:
+            listener.stop()
+
+    def is_listening(self):
+        """
+        Is the live update connection up?
+        """
+        listener = self._listener
+        return bool(listener and listener.client
+                    and listener.client.is_connected())
+
+    def _apply_report(self, payload):
+        """
+        Apply an upload/pointdata report to the cached zone it is about.
+        Returns the zone, or None if it is not a known zone.
+        """
+        if isinstance(payload, bytes):
+            payload = payload.decode('utf-8', 'replace')
+        # the JSON object can be followed by padding
+        message, _ = json.JSONDecoder().raw_decode(payload)
+        data = message['data']
+        if not data.get('pointData'):
+            return None
+        for home in self._homes or []:
+            for zone in home.get('zones', []):
+                if zone.get('mac') == data.get('mac'):
+                    zone_apply_points(zone, parse_point_data(data['pointData']))
+                    return zone
+        return None
+
     def reset_login(self):
         """
         reset the login data to force a re-login
@@ -1332,6 +1473,8 @@ class EphEmber:
             raise RuntimeError("cache_home not implemented")
 
         self._login_data = None
+        self._auth_lock = threading.RLock()
+        self._listener = None
         self._user = {
             'user_id': None,
             'username': username,
