@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Commands are sent like the Ember app sends them: a serial number that
+  changes with every message (it was always 7870, so the gateway could drop
+  repeated commands as duplicates), the user ID, and MQTT QoS 1 so the
+  broker acknowledges each command.
 - Commands (set temperature, mode, boost, advance) now wait for the Ember
   MQTT broker to accept the connection before sending, and always
   disconnect afterwards. Before, every command left an open TLS connection
