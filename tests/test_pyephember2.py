@@ -580,12 +580,18 @@ def test_live_updates_ignore_unknown_and_bad_messages(monkeypatch):
     assert updates == []
 
 
-def test_live_updates_reconnect_with_fresh_token(monkeypatch):
+def test_live_updates_reconnect_with_fresh_token(monkeypatch, caplog):
     ember, client, updates = listening_ember(monkeypatch)
+    tokens = iter(["new", "newer"])
     monkeypatch.setattr(ember, "messenging_credentials",
-                        lambda: {"user_id": "42", "token": "new"})
+                        lambda: {"user_id": "42", "token": next(tokens)})
+    caplog.set_level("DEBUG", logger=pe.__name__)
+    # paho reports a keep-alive timeout twice
     client.on_disconnect(client, None, None, FakeReason(True), None)
-    assert client.credentials == ("app/new", "new")
+    client.on_disconnect(client, None, None, FakeReason(True), None)
+    assert caplog.text.count("Ember live updates disconnected") == 1
+    # every attempt still gets a fresh login, e.g. after a refused reconnect
+    assert client.credentials == ("app/newer", "newer")
 
 
 def test_stop_listening(monkeypatch):

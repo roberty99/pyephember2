@@ -1373,12 +1373,14 @@ class EphEmber:
             for home in homes for zone in home['zones']
         })
         listener = EphMessenger(self)
+        state = {'connected': False}
 
         def on_connect(client, userdata, flags, reason_code, properties=None):
             # pylint: disable=unused-argument,too-many-arguments
             if getattr(reason_code, 'is_failure', False):
                 _LOGGER.debug("Ember live updates refused: %s", reason_code)
                 return
+            state['connected'] = True
             _LOGGER.debug("Ember live updates connected")
             for topic in topics:
                 client.subscribe(topic, 1)
@@ -1388,7 +1390,11 @@ class EphEmber:
             # pylint: disable=unused-argument,too-many-arguments
             if self._listener is not listener:
                 return  # stop_listening() was called
-            _LOGGER.debug("Ember live updates disconnected: %s", reason_code)
+            # paho can report the same drop twice; log it once
+            if state['connected']:
+                state['connected'] = False
+                _LOGGER.debug("Ember live updates disconnected: %s",
+                              reason_code)
             # the token may have expired; reconnect with a fresh one
             try:
                 credentials = self.messenging_credentials()

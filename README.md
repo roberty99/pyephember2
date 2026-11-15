@@ -25,6 +25,19 @@ explicitly:
     >>> from zoneinfo import ZoneInfo
     >>> e = EphEmber('my@username.com', 'mypassword', tz=ZoneInfo("Europe/Dublin"))
 
+Live updates
+------------
+
+The Ember gateway reports every change (target, mode, temperatures, boiler
+state) as it happens, whether it was made by this library, the Ember app or
+the thermostat. `start_listening` keeps a connection open, updates the cached
+zones and calls back for each report (from a background thread):
+
+    >>> def changed(zone):
+    ...     print(zone["name"], zone_target_temperature(zone))
+    >>> e.start_listening(changed)
+    >>> e.stop_listening()
+
 API
 ---
 

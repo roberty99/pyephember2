@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.14
 
 - Live updates: `EphEmber.start_listening(callback)` keeps an MQTT
   connection open and listens to the reports the gateway sends whenever
