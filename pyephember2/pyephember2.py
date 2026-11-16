@@ -947,7 +947,8 @@ class EphEmber:
         user_details = self._get_user_details()
         data = user_details.get('data', {})
         if 'id' not in data:
-            raise RuntimeError("Cannot get user ID")
+            # the login worked, so this is the cloud failing, not the password
+            raise EphEmberError("Cannot get user ID")
         self._user['user_id'] = str(data['id'])
         return self._user['user_id']
 

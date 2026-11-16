@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.15
+
+- A failed user lookup (`user/selectUser`) after a successful login now
+  raises `EphEmberError`, like other cloud failures, instead of a plain
+  `RuntimeError`, so callers don't mistake it for a rejected password.
+  `EphEmberError` subclasses `RuntimeError`, so existing handlers still
+  catch it.
+
 ## 0.4.14
 
 - Live updates: `EphEmber.start_listening(callback)` keeps an MQTT

@@ -602,3 +602,18 @@ def test_stop_listening(monkeypatch):
     monkeypatch.setattr(ember, "messenging_credentials",
                         lambda: pytest.fail("should not refresh"))
     client.on_disconnect(client, None, None, FakeReason(False), None)
+
+
+def test_user_id_failure_is_a_connection_error(monkeypatch):
+    """A failed user lookup after a good login isn't a rejected password."""
+    ember = make_ember(monkeypatch, load_fixture())
+    original = EphEmber._http
+
+    def http(self, endpoint, **kwargs):
+        if endpoint == "user/selectUser":
+            return FakeResponse({"status": 500, "data": None})
+        return original(self, endpoint, **kwargs)
+
+    monkeypatch.setattr(EphEmber, "_http", http)
+    with pytest.raises(pe.EphEmberError, match="Cannot get user ID"):
+        ember.messenging_credentials()
