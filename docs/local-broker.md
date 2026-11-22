@@ -125,6 +125,10 @@ e.close()
   `<productId>/<uid>/state/...`, so `EphEmberLocal` gets everything as soon as
   it connects. Without it, the zones appear the next time the gateway
   reconnects.
+- **Without the bridge**, nobody answers the gateway's time requests
+  (`gettime`), so it reconnects about every half hour and its clock is
+  never set. Run the state keeper with `--answer-time` to answer them
+  as the cloud does.
 - `EphEmberLocal(...)` waits up to `wait` seconds (default 10) for every zone's
   readings and schedule.
 

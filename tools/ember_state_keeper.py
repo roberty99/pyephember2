@@ -14,10 +14,17 @@ Run it next to the broker, for example:
 
 It needs paho-mqtt, and a broker login that may read +/+/upload/# and
 +/+/state/#, and write +/+/state/#.
+
+With --answer-time it also answers the gateway's time requests (gettime ->
+downtime), as the cloud does. Use it when the broker does not bridge to the
+cloud: otherwise the gateway keeps reconnecting (about every half hour)
+and its clock is never set. It then also needs to read +/+/gettime and
+write +/+/downtime.
 """
 import argparse
 import base64
 import json
+import time
 import paho.mqtt.client as mqtt
 
 PARSER = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -25,6 +32,8 @@ PARSER.add_argument("--host", default="127.0.0.1")
 PARSER.add_argument("--port", type=int, default=11883)
 PARSER.add_argument("--username")
 PARSER.add_argument("--password")
+PARSER.add_argument("--answer-time", action="store_true",
+                    help="answer gettime (only without a cloud bridge)")
 ARGS = PARSER.parse_args()
 KINDS = {"zoneType", "pointdata", "programme", "thermostat", "commdata"}
 
@@ -63,17 +72,38 @@ def key_for(kind, data):
     return "gateway"
 
 
+def answer_time(client, product_id, uid, payload):
+    """Reply to gettime like the cloud does (downtime, time in ms)."""
+    try:
+        serial = json.JSONDecoder().raw_decode(
+            payload.decode("utf-8", "replace"))[0]["common"]["serial"]
+    except (ValueError, KeyError, TypeError):
+        serial = 1
+    now = int(time.time() * 1000)
+    reply = {"common": {"uid": uid, "productId": product_id,
+                        "serial": str(serial), "timestamp": now},
+             "data": {"timestamp": now}}
+    client.publish("{}/{}/downtime".format(product_id, uid),
+                   json.dumps(reply), qos=0)
+    print("answered gettime", flush=True)
+
+
 def on_connect(client, userdata, flags, reason_code, properties=None):
     # paho 2 passes a ReasonCode, paho 1 an int
     if not getattr(reason_code, "is_failure", reason_code != 0):
         # our own retained copies first, to carry on merging after a restart
         client.subscribe("+/+/state/pointdata/#", 1)
         client.subscribe("+/+/upload/#", 1)
+        if ARGS.answer_time:
+            client.subscribe("+/+/gettime", 0)
         print("state keeper connected", flush=True)
 
 
 def on_message(client, userdata, msg):
     parts = msg.topic.split("/")
+    if len(parts) == 3 and parts[2] == "gettime":
+        answer_time(client, parts[0], parts[1], msg.payload)
+        return
     if len(parts) == 5 and parts[2:4] == ["state", "pointdata"]:
         try:
             data = json.loads(msg.payload)["data"]
