@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.16
+
+- Optional local control: `EphEmber(..., local_broker={...})` sends commands
+  and receives live updates through an MQTT broker on your network that the
+  gateway connects to, instead of the Ember cloud. The cloud is still used to
+  log in and list the zones. See README and docs/local-broker.md.
+
 ## 0.4.15
 
 - A failed user lookup (`user/selectUser`) after a successful login now
