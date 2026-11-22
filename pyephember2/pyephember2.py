@@ -1576,14 +1576,16 @@ class EphEmberLocal(EphEmber):
 
     Zone names are not known to the gateway. Pass names={mac: name} to set
     them; otherwise hot water zones are called "Hot Water" and others
-    "Heating" (numbered if there are several). zoneid is the zone's mac.
+    "Heating" (numbered if there are several). zoneid is the zone's mac,
+    unless zone_ids={mac: zoneid} gives another (e.g. to keep the ids a
+    cloud setup used).
 
     Call close() when done.
     """
 
     # pylint: disable=super-init-not-called
     def __init__(self, local_broker, names=None, tz=None, user_id=None,
-                 wait=10):
+                 wait=10, zone_ids=None):  # pylint: disable=too-many-arguments
         self._login_data = None
         self._auth_lock = threading.RLock()
         self._listener = None
@@ -1597,6 +1599,7 @@ class EphEmberLocal(EphEmber):
         self.local_broker.setdefault('port', 11883)
 
         self._names = dict(names or {})
+        self._zone_ids = dict(zone_ids or {})
         self._homes = []
         self._pending_points = {}
         self._pending_programmes = {}
@@ -1706,7 +1709,7 @@ class EphEmberLocal(EphEmber):
                 home = {"gatewayid": uid, "name": "Home", "zones": []}
                 self._homes.append(home)
             zone = {
-                "zoneid": mac,
+                "zoneid": self._zone_ids.get(mac, mac),
                 "mac": mac,
                 "name": self._names.get(mac)
                 or self._default_name(device.get("DType")),

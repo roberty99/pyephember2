@@ -823,3 +823,13 @@ def test_local_has_no_cloud_login(monkeypatch):
     ember, client = local_ember(monkeypatch)
     with pytest.raises(pe.EphEmberError):
         ember.messenging_credentials()
+
+
+def test_local_keeps_cloud_zone_ids(monkeypatch):
+    ember, client = local_ember(monkeypatch, zone_ids={"rad": "cloud-7"})
+    gateway_reports(client)
+    radiators = ember.get_zone("cloud-7")
+    assert radiators["mac"] == "rad"
+    assert ember.get_zone("hw")["zoneid"] == "hw"
+    assert ember.set_zone_target_temperature("cloud-7", 20)
+    assert client.published[0][1]["data"]["mac"] == "rad"
