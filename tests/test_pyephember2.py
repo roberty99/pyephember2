@@ -397,16 +397,16 @@ class FakeMqttClient:
         FakeMqttClient.instances.append(self)
 
     def tls_set(self):
-        pass
+        self.tls = True
 
     def username_pw_set(self, user, password):
         self.credentials = (user, password)
 
     def connect(self, host, port):
-        pass
+        self.target = (host, port)
 
     def connect_async(self, host, port):
-        pass
+        self.target = (host, port)
 
     def reconnect_delay_set(self, min_delay, max_delay):
         self.reconnect_delay = (min_delay, max_delay)
@@ -602,6 +602,69 @@ def test_stop_listening(monkeypatch):
     monkeypatch.setattr(ember, "messenging_credentials",
                         lambda: pytest.fail("should not refresh"))
     client.on_disconnect(client, None, None, FakeReason(False), None)
+
+
+# --- local broker -------------------------------------------------------------
+
+LOCAL = {"host": "192.168.0.235", "username": "ha_ember", "password": "pw"}
+
+
+def test_local_broker_command(monkeypatch):
+    ember = make_ember(monkeypatch, load_fixture())
+    monkeypatch.setattr(ember, "_get_user_id", lambda force=False: "42")
+    ember.local_broker = dict(LOCAL, port=11883)
+    FakeMqttClient.instances.clear()
+    monkeypatch.setattr(pe.mqtt, "Client", FakeMqttClient)
+    monkeypatch.setattr(ember, "messenging_credentials",
+                        lambda: pytest.fail("no cloud MQTT login"))
+    zone = zones_by_name(ember)["Radiators"]
+
+    assert ember.set_zone_target_temperature(zone["zoneid"], 21)
+    client = FakeMqttClient.instances[-1]
+    assert client.target == ("192.168.0.235", 11883)
+    assert client.credentials == ("ha_ember", "pw")
+    assert not getattr(client, "tls", False)
+    topic, msg, qos = client.published[0]
+    assert topic.endswith("/download/pointdata")
+    assert msg["common"]["userId"] == "42"
+
+
+def test_local_broker_default_port(monkeypatch):
+    monkeypatch.setattr(EphEmber, "_login", lambda self: True)
+    ember = EphEmber("u", "p", local_broker={"host": "h"})
+    assert ember.local_broker == {"host": "h", "port": 11883}
+
+
+def test_local_broker_works_while_cloud_is_down(monkeypatch):
+    ember = make_ember(monkeypatch, load_fixture())
+    ember._user["user_id"] = "42"
+    ember.local_broker = dict(LOCAL, port=11883)
+
+    def cloud_down(*args, **kwargs):
+        raise requests.ConnectionError("cloud down")
+
+    monkeypatch.setattr(ember, "_do_auth", cloud_down)
+    assert ember.cached_user_id() == "42"
+
+
+def test_local_broker_listener_does_not_refresh_token(monkeypatch):
+    data = load_fixture()
+    for number, zone in enumerate(data["data"]):
+        zone["mac"] = "mac{}".format(number)
+        zone["productId"], zone["uid"] = "P", "U"
+    ember = make_ember(monkeypatch, data)
+    monkeypatch.setattr(ember, "_get_user_id", lambda force=False: "42")
+    ember.local_broker = dict(LOCAL, port=11883)
+    FakeMqttClient.instances.clear()
+    monkeypatch.setattr(pe.mqtt, "Client", FakeMqttClient)
+    ember.start_listening(lambda zone: None)
+    client = FakeMqttClient.instances[-1]
+    assert client.target == ("192.168.0.235", 11883)
+    assert client.subscribed == [("P/U/upload/pointdata", 1)]
+    monkeypatch.setattr(ember, "messenging_credentials",
+                        lambda: pytest.fail("should not refresh"))
+    client.on_disconnect(client, None, None, FakeReason(True), None)
+    assert client.credentials == ("ha_ember", "pw")
 
 
 def test_user_id_failure_is_a_connection_error(monkeypatch):

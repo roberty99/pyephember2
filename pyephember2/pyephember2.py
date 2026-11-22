@@ -699,21 +699,35 @@ class EphMessenger:
         With connect_async=True the connection is made by the network loop,
         which keeps retrying until the broker can be reached.
         """
-        credentials = self.parent.messenging_credentials()
-        self.user_id = credentials['user_id']
-        self.client_id = '{}_{}'.format(
-            credentials['user_id'], str(int(1000*time.time()))
-        )
-        token = credentials['token']
+        local = self.parent.local_broker
+        if local:
+            # The gateway's own broker on the LAN: fixed login, no cloud
+            self.user_id = self.parent.cached_user_id()
+            self.client_id = 'pyephember2_{}'.format(int(1000*time.time()))
+            host, port = local['host'], local['port']
+        else:
+            credentials = self.parent.messenging_credentials()
+            self.user_id = credentials['user_id']
+            self.client_id = '{}_{}'.format(
+                credentials['user_id'], str(int(1000*time.time()))
+            )
+            host, port = self.api_url, self.api_port
 
         mclient = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, self.client_id)
-        mclient.tls_set()
         self.client = mclient
         self._connect_result = None
         self._user_on_connect = None
 
-        user_name = "app/{}".format(token)
-        mclient.username_pw_set(user_name, token)
+        if local:
+            if local.get('tls'):
+                mclient.tls_set()
+            if local.get('username') is not None:
+                mclient.username_pw_set(local['username'],
+                                        local.get('password'))
+        else:
+            mclient.tls_set()
+            token = credentials['token']
+            mclient.username_pw_set("app/{}".format(token), token)
 
         if callbacks is not None:
             callbacks = dict(callbacks)
@@ -724,9 +738,9 @@ class EphMessenger:
 
         try:
             if connect_async:
-                mclient.connect_async(self.api_url, self.api_port)
+                mclient.connect_async(host, port)
             else:
-                mclient.connect(self.api_url, self.api_port)
+                mclient.connect(host, port)
         except (OSError, ValueError) as err:
             raise EphEmberError(
                 "Cannot connect to Ember MQTT broker: {}".format(err)
@@ -1027,6 +1041,18 @@ class EphEmber:
         )
 
     # Public interface
+
+    def cached_user_id(self):
+        """
+        The Ember user ID for MQTT messages, without failing: a local broker
+        must keep working while the cloud is down.
+        """
+        try:
+            if self._do_auth():
+                return self._get_user_id()
+        except (EphEmberError, RuntimeError, OSError) as err:
+            _LOGGER.debug("Cannot get Ember user ID: %s", err)
+        return self._user['user_id']
 
     def messenging_credentials(self):
         """
@@ -1396,6 +1422,8 @@ class EphEmber:
                 state['connected'] = False
                 _LOGGER.debug("Ember live updates disconnected: %s",
                               reason_code)
+            if self.local_broker:
+                return  # fixed login; paho reconnects by itself
             # the token may have expired; reconnect with a fresh one
             try:
                 credentials = self.messenging_credentials()
@@ -1468,9 +1496,16 @@ class EphEmber:
         self._login_data = None
 
     # Ctor
-    def __init__(self, username, password, cache_home=False, tz=None):
+    def __init__(self, username, password, cache_home=False, tz=None,
+                 local_broker=None):
         """
         Performs login and save session cookie.
+
+        local_broker sends commands and receives live updates through an
+        MQTT broker on the local network that the gateway is connected to,
+        instead of the Ember cloud: a dict with 'host' and optionally
+        'port' (default 11883), 'username', 'password' and 'tls'. The
+        cloud is still used to log in and to list the homes and zones.
 
         tz is the home's time zone (a datetime.tzinfo such as
         zoneinfo.ZoneInfo("Europe/Dublin")), used to work out which
@@ -1505,6 +1540,11 @@ class EphEmber:
         self._refresh_token_validity_seconds = 1800
 
         self.http_api_base = 'https://eu-https.topband-cloud.com/ember-back/'
+
+        self.local_broker = None
+        if local_broker:
+            self.local_broker = dict(local_broker)
+            self.local_broker.setdefault('port', 11883)
 
         self.messenger = EphMessenger(self)
 
