@@ -617,3 +617,185 @@ def test_user_id_failure_is_a_connection_error(monkeypatch):
     monkeypatch.setattr(EphEmber, "_http", http)
     with pytest.raises(pe.EphEmberError, match="Cannot get user ID"):
         ember.messenging_credentials()
+
+
+# --- other system types ------------------------------------------------------
+
+def system_zone_program(device_type, system_type, points):
+    """A zoneProgram response with one zone of the given system type."""
+    data = load_fixture()
+    zone = data["data"][0]
+    data["data"] = [zone]
+    zone["name"] = "Zone"
+    zone["deviceType"] = device_type
+    if system_type is None:
+        zone.pop("systemType", None)
+    else:
+        zone["systemType"] = system_type
+    zone["pointDataList"] = [
+        {"pointIndex": index, "value": str(value)}
+        for index, value in points.items()
+    ]
+    return data
+
+
+def system_zone(monkeypatch, device_type, system_type, points):
+    ember = make_ember(
+        monkeypatch, system_zone_program(device_type, system_type, points)
+    )
+    return ember, zones_by_name(ember)["Zone"]
+
+
+# Points as reported by EMBER-TS2/PS2 (from UtzR's map): 11 mode,
+# 6 schedule target, 12 manual target, 16 override, 17 override target
+TS_POINTS = {5: 195, 6: 180, 11: 0, 12: 200, 13: 0, 14: 220, 15: 0,
+             16: 0, 17: 210, 18: 2}
+
+
+@pytest.mark.parametrize(
+    "system_type,device_type", [("EMBER-TS2", 258), ("EMBER-TS1", 2)]
+)
+def test_ts_zone(monkeypatch, system_type, device_type):
+    _, zone = system_zone(monkeypatch, device_type, system_type, TS_POINTS)
+    assert pe.zone_current_temperature(zone) == 19.5
+    assert pe.zone_target_temperature(zone) == 18.0
+    assert pe.zone_mode(zone) == ZoneMode.AUTO
+    assert pe.boiler_state(zone) == 2
+    assert not pe.zone_is_hotwater(zone)
+    assert pe.zone_boost_temperature(zone) == 22.0
+
+
+@pytest.mark.parametrize(
+    "points,mode,target",
+    [
+        ({16: 1}, ZoneMode.AUTO, 21.0),
+        ({11: 1}, ZoneMode.ON, 20.0),
+        ({11: 4}, ZoneMode.OFF, 20.0),
+        ({11: 9}, None, 20.0),
+    ],
+)
+def test_ts_zone_modes_and_targets(monkeypatch, points, mode, target):
+    _, zone = system_zone(
+        monkeypatch, 258, "EMBER-TS2", {**TS_POINTS, **points}
+    )
+    assert pe.zone_mode(zone) == mode
+    assert pe.zone_target_temperature(zone) == target
+
+
+@pytest.mark.parametrize(
+    "value,mode",
+    [(0, ZoneMode.AUTO), (9, ZoneMode.ALL_DAY), (10, ZoneMode.ON),
+     (4, ZoneMode.OFF)],
+)
+def test_ps2_thermostat(monkeypatch, value, mode):
+    _, zone = system_zone(
+        monkeypatch, 514, "EMBER-PS2", {**TS_POINTS, 11: value}
+    )
+    assert not pe.zone_is_hotwater(zone)
+    assert pe.zone_current_temperature(zone) == 19.5
+    assert pe.zone_mode(zone) == mode
+
+
+def test_ps2_hot_water(monkeypatch):
+    _, zone = system_zone(monkeypatch, 516, "EMBER-PS2", TS_POINTS)
+    assert pe.zone_is_hotwater(zone)
+
+
+def test_514_without_system_type_unchanged(monkeypatch):
+    _, zone = system_zone(monkeypatch, 514, None, {5: 195, 6: 180, 11: 10})
+    assert pe.zone_is_hotwater(zone)
+    assert pe.zone_current_temperature(zone) is None
+    assert pe.zone_target_temperature(zone) is None
+    assert pe.zone_mode(zone) == ZoneMode.ON
+
+
+def test_rs_zone(monkeypatch):
+    _, zone = system_zone(
+        monkeypatch, 773, "EMBER-RS", {5: 195, 11: 1, 12: 205, 18: 1}
+    )
+    assert pe.zone_mode(zone) == ZoneMode.ON
+    assert pe.zone_target_temperature(zone) == 20.5
+    assert pe.boiler_state(zone) == 1
+
+
+def test_unknown_system_type_uses_ember_ps_points(monkeypatch):
+    _, zone = system_zone(
+        monkeypatch, 2, "EMBER-NEW", {5: 195, 6: 205, 7: 2, 10: 2}
+    )
+    assert pe.zone_target_temperature(zone) == 20.5
+    assert pe.zone_mode(zone) == ZoneMode.ON
+    assert pe.boiler_state(zone) == 2
+
+
+def test_advance_not_reported_on_newer_systems(monkeypatch):
+    _, zone = system_zone(monkeypatch, 258, "EMBER-TS2", {**TS_POINTS, 4: 1})
+    assert pe.zone_advance_active(zone) is False
+
+
+def capture_commands(monkeypatch, ember):
+    sent = []
+    monkeypatch.setattr(
+        ember.messenger, "send_zone_commands",
+        lambda zone, cmds, *a, **k: sent.append(
+            [pe.zone_command_to_ints(zone, cmd) for cmd in cmds]
+        ) or True,
+    )
+    return sent
+
+
+def test_ts_target_in_auto_sets_override(monkeypatch):
+    ember, zone = system_zone(monkeypatch, 258, "EMBER-TS2", TS_POINTS)
+    sent = capture_commands(monkeypatch, ember)
+    ember.set_zone_target_temperature(zone["zoneid"], 22)
+    assert sent == [[[0, 16, 1, 1], [0, 17, 4, 0, 220]]]
+    # the cached zone shows the new target straight away
+    assert pe.zone_target_temperature(ember.get_zone(zone["zoneid"])) == 22.0
+
+
+def test_ts_target_in_manual_mode(monkeypatch):
+    ember, zone = system_zone(
+        monkeypatch, 258, "EMBER-TS2", {**TS_POINTS, 11: 1}
+    )
+    sent = capture_commands(monkeypatch, ember)
+    ember.set_zone_target_temperature(zone["zoneid"], 22)
+    assert sent == [[[0, 12, 4, 0, 220]]]
+
+
+@pytest.mark.parametrize(
+    "system_type,device_type,mode,expected",
+    [
+        ("EMBER-TS2", 258, ZoneMode.OFF, [0, 11, 1, 4]),
+        ("EMBER-TS2", 258, ZoneMode.ON, [0, 11, 1, 1]),
+        ("EMBER-PS2", 514, ZoneMode.ON, [0, 11, 1, 10]),
+        ("EMBER-PS2", 514, ZoneMode.ALL_DAY, [0, 11, 1, 9]),
+        ("EMBER-RS", 773, ZoneMode.OFF, [0, 11, 1, 4]),
+    ],
+)
+def test_set_mode_on_newer_systems(
+    monkeypatch, system_type, device_type, mode, expected
+):
+    ember, zone = system_zone(monkeypatch, device_type, system_type, TS_POINTS)
+    sent = capture_commands(monkeypatch, ember)
+    ember.set_zone_mode(zone["zoneid"], mode)
+    assert sent == [[expected]]
+
+
+def test_unsupported_mode_rejected(monkeypatch):
+    ember, zone = system_zone(monkeypatch, 258, "EMBER-TS2", TS_POINTS)
+    capture_commands(monkeypatch, ember)
+    with pytest.raises(ValueError):
+        ember.set_zone_mode(zone["zoneid"], ZoneMode.ALL_DAY)
+
+
+def test_ts_boost_is_one_hour_until_end_time(monkeypatch):
+    ember, zone = system_zone(monkeypatch, 258, "EMBER-TS2", TS_POINTS)
+    sent = capture_commands(monkeypatch, ember)
+    before = int(datetime.datetime.now().timestamp())
+    ember.activate_zone_boost(zone["zoneid"], boost_temperature=22,
+                              num_hours=3)
+    hours, temp, end = sent[0]
+    assert hours == [0, 13, 1, 1]
+    assert temp == [0, 14, 4, 0, 220]
+    assert end[:3] == [0, 15, 5]
+    end_time = int.from_bytes(bytes(end[3:]), "big")
+    assert before + 3600 <= end_time <= before + 3605

@@ -41,6 +41,10 @@ class ZoneMode(Enum):
 
 def GetPointIndex(zone, pointIndex) -> int:
     assert isinstance(pointIndex, PointIndex)
+    system_indexes = _SYSTEM_POINT_INDEXES.get(zone.get("systemType"))
+    if system_indexes is not None and pointIndex in system_indexes:
+        index = system_indexes[pointIndex]
+        return index(zone) if callable(index) else index
     match pointIndex:
         case PointIndex.ADVANCE_ACTIVE:
             return 4
@@ -102,6 +106,84 @@ class PointIndex(Enum):
     XXX_16_0000 = 16
     CTR_17_ABAB = 17
     CTR_18_0AB7 = 18
+    # set to 1 when the target temperature was changed in AUTO mode
+    AUTO_OVERRIDE = 16
+
+
+def _raw_point_value(zone, index):
+    """
+    Value of a point by its index, without any mapping
+    """
+    for datum in zone.get('pointDataList', []):
+        if datum['pointIndex'] == index:
+            return int(datum['value'])
+    return None
+
+
+def _overridable_target_index(zone):
+    """
+    Target temperature point on EMBER-TS1, EMBER-TS2 and EMBER-PS2:
+    in AUTO mode 6 follows the schedule and 17 holds a changed target
+    (while the override point 16 is 1); the other modes use 12.
+    """
+    if _raw_point_value(zone, 11) == 0:
+        return 17 if _raw_point_value(zone, 16) == 1 else 6
+    return 12
+
+
+# Point indexes and mode values that differ by system type (the zone's
+# "systemType"). Systems not listed here, such as EMBER-PS, use the
+# indexes in GetPointIndex and the modes in zone_mode.
+# Based on the maps by UtzR (https://github.com/UtzR/pyephember2),
+# worked out with owners of these systems.
+_OVERRIDABLE_SYSTEM_INDEXES = {
+    PointIndex.ADVANCE_ACTIVE: 4,
+    PointIndex.CURRENT_TEMP: 5,
+    PointIndex.TARGET_TEMP: _overridable_target_index,
+    PointIndex.MODE: 11,
+    PointIndex.BOOST_HOURS: 13,
+    PointIndex.BOOST_TEMP: 14,
+    PointIndex.BOOST_TIME: 15,
+    PointIndex.AUTO_OVERRIDE: 16,
+    PointIndex.BOILER_STATE: 18,
+}
+
+_SYSTEM_POINT_INDEXES = {
+    "EMBER-TS1": _OVERRIDABLE_SYSTEM_INDEXES,
+    "EMBER-TS2": _OVERRIDABLE_SYSTEM_INDEXES,
+    "EMBER-PS2": _OVERRIDABLE_SYSTEM_INDEXES,
+    "EMBER-RS": {
+        PointIndex.ADVANCE_ACTIVE: 4,
+        PointIndex.CURRENT_TEMP: 5,
+        PointIndex.TARGET_TEMP: 12,
+        PointIndex.MODE: 11,
+        PointIndex.BOOST_HOURS: 13,
+        PointIndex.BOOST_TEMP: 14,
+        PointIndex.BOOST_TIME: 15,
+        PointIndex.BOILER_STATE: 18,
+    },
+}
+
+# Systems that only boost for up to an hour, with the end time
+# as the boost timestamp
+_END_TIME_BOOST_SYSTEMS = tuple(_SYSTEM_POINT_INDEXES)
+
+# Systems where changing the target in AUTO mode sets an override
+_OVERRIDE_SYSTEMS = ("EMBER-TS1", "EMBER-TS2", "EMBER-PS2")
+
+_ON_OFF_MODES = {ZoneMode.AUTO: 0, ZoneMode.ON: 1, ZoneMode.OFF: 4}
+
+_SYSTEM_MODES = {
+    "EMBER-TS1": _ON_OFF_MODES,
+    "EMBER-TS2": _ON_OFF_MODES,
+    "EMBER-RS": _ON_OFF_MODES,
+    "EMBER-PS2": {
+        ZoneMode.AUTO: 0,
+        ZoneMode.ALL_DAY: 9,
+        ZoneMode.ON: 10,
+        ZoneMode.OFF: 4,
+    },
+}
 
 
 # """
@@ -125,7 +207,8 @@ _WRITABLE_COMMAND_TYPES = {
     'MODE': 'SMALL_INT',
     'BOOST_HOURS': 'SMALL_INT',
     'BOOST_TIME': 'TIMESTAMP',
-    'BOOST_TEMP': 'TEMP_RW'
+    'BOOST_TEMP': 'TEMP_RW',
+    'AUTO_OVERRIDE': 'SMALL_INT'
 }
 
 
@@ -249,6 +332,9 @@ def zone_advance_active(zone):
     """
     Check if zone has advance active
     """
+    if zone.get("systemType") in _SYSTEM_POINT_INDEXES:
+        # Advance is only known to work on EMBER-PS
+        return False
     match zone["deviceType"]:
         case 773:
             # Mode not supported
@@ -418,13 +504,25 @@ def zone_is_scheduled_on(zone):
     return False
 
 # Hot water devices - no temperature control
-HotWaterDevices = [4, 514]
+HotWaterDevices = [4, 514, 516]
+
+def _has_no_temperature(zone):
+    """
+    Zones without temperature control. deviceType 514 is a thermostat
+    on EMBER-PS2, but has been reported as a programmer without one.
+    """
+    if zone["deviceType"] == 514:
+        return zone.get("systemType") != "EMBER-PS2"
+    return False
+
 
 def zone_is_hotwater(zone):
-    if zone["deviceType"] in HotWaterDevices:
-        return True
-    else:
-        return False
+    """
+    Is this a hot water zone (or one without temperature control)?
+    """
+    if zone["deviceType"] == 514:
+        return _has_no_temperature(zone)
+    return zone["deviceType"] in HotWaterDevices
 
 def zone_name(zone):
     """
@@ -483,11 +581,9 @@ def zone_target_temperature(zone):
     """
     Get target temperature for this zone
     """
-    match zone["deviceType"]:
-        case 514:
-            return None
-        case _:
-            return zone_temperature(zone, PointIndex.TARGET_TEMP)
+    if _has_no_temperature(zone):
+        return None
+    return zone_temperature(zone, PointIndex.TARGET_TEMP)
 
 def zone_boost_temperature(zone):
     """
@@ -500,11 +596,9 @@ def zone_current_temperature(zone):
     """
     Get current temperature for this zone
     """
-    match zone["deviceType"]:
-        case 514:
-            return None
-        case _:
-            return zone_temperature(zone, PointIndex.CURRENT_TEMP)
+    if _has_no_temperature(zone):
+        return None
+    return zone_temperature(zone, PointIndex.CURRENT_TEMP)
 
 
 def zone_pointdata_value(zone, pointIndex):
@@ -549,6 +643,12 @@ def zone_mode(zone):
     """
 
     modeValue = zone_pointdata_value(zone, PointIndex.MODE)
+    system_modes = _SYSTEM_MODES.get(zone.get("systemType"))
+    if system_modes is not None:
+        for mode, value in system_modes.items():
+            if value == modeValue:
+                return mode
+        return None
     match modeValue:
         case 0:
             return ZoneMode.AUTO
@@ -564,6 +664,13 @@ def zone_mode(zone):
             return ZoneMode.OFF
 
 def get_zone_mode_value(zone, mode) -> int:
+    system_modes = _SYSTEM_MODES.get(zone.get("systemType"))
+    if system_modes is not None:
+        if mode not in system_modes:
+            raise ValueError("{} does not support {}".format(
+                zone.get("systemType"), mode.name))
+        return system_modes[mode]
+
     if mode == ZoneMode.AUTO:
         return 0
 
@@ -981,6 +1088,14 @@ class EphEmber:
         return sent
 
     def _set_zone_target_temperature(self, zone, target_temperature):
+        if (zone.get("systemType") in _OVERRIDE_SYSTEMS
+                and zone_mode(zone) == ZoneMode.AUTO):
+            # AUTO keeps the schedule's target in point 6; a changed
+            # target goes in point 17 and needs the override set
+            return self._send_zone_commands(zone, [
+                ZoneCommand('AUTO_OVERRIDE', 1),
+                ZoneCommand('TARGET_TEMP', target_temperature, 17),
+            ])
         return self._send_zone_commands(
             zone, ZoneCommand('TARGET_TEMP', target_temperature)
         )
@@ -1011,13 +1126,22 @@ class EphEmber:
 
         If timestamp is None, do not send timestamp at all.
         (maybe results in permanent boost?)
+
+        EMBER-TS1, EMBER-TS2, EMBER-PS2 and EMBER-RS boost for at most
+        an hour, and their timestamp is when the boost ends.
         """
+        end_time_boost = zone.get("systemType") in _END_TIME_BOOST_SYSTEMS
+        if end_time_boost:
+            num_hours = min(num_hours, 1)
         cmds = [ZoneCommand('BOOST_HOURS', num_hours, None)]
         if boost_temperature is not None:
             cmds.append(ZoneCommand('BOOST_TEMP', boost_temperature, None))
         if timestamp is not None:
             if timestamp == 0:
-                timestamp = int(datetime.datetime.now().timestamp())
+                start = datetime.datetime.now()
+                if end_time_boost:
+                    start += datetime.timedelta(hours=num_hours)
+                timestamp = int(start.timestamp())
             cmds.append(ZoneCommand('BOOST_TIME', timestamp, None))
         return self._send_zone_commands(zone, cmds)
 

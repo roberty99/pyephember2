@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Support for EMBER-TS1, EMBER-TS2, EMBER-PS2 and EMBER-RS systems:
+  point indexes and mode values now follow the zone's `systemType`,
+  using the maps worked out by UtzR (https://github.com/UtzR/pyephember2)
+  with owners of these systems. Thank you! On these systems:
+  - modes are AUTO 0, ON 1, OFF 4 (EMBER-PS2: AUTO 0, ALL_DAY 9, ON 10,
+    OFF 4), read from point 11; boiler state is point 18; boost uses
+    points 13 (on), 14 (temperature) and 15 (end time), for at most an
+    hour
+  - changing the target temperature in AUTO mode sets the override
+    (point 16) and writes point 17, as the EMBER app does
+  - deviceType 514 is a thermostat on EMBER-PS2, and deviceType 516 is
+    hot water
+- EMBER-PS and systems without a known `systemType` work as before.
+- `tools/ember_report.py`: a read-only script that prints what a system
+  reports, without personal details, to help add support for it.
+
 ## 0.4.15
 
 - A failed user lookup (`user/selectUser`) after a successful login now
