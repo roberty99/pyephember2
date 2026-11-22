@@ -10,6 +10,8 @@
 - `tools/ember_state_keeper.py` keeps the gateway's latest reports as
   retained messages, so `EphEmberLocal` gets the zone list and schedules
   at once (the gateway only sends them when it connects).
+  It merges point reports per zone, because the gateway often reports
+  only the points that changed.
 - The code that links a zone's schedule slots is now
   `build_zone_programs(zone)`, shared by both modes.
 
