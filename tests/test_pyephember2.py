@@ -606,7 +606,7 @@ def test_stop_listening(monkeypatch):
 
 # --- local broker -------------------------------------------------------------
 
-LOCAL = {"host": "192.168.0.235", "username": "ha_ember", "password": "pw"}
+LOCAL = {"host": "192.168.1.20", "username": "me", "password": "pw"}
 
 
 def test_local_broker_command(monkeypatch):
@@ -621,8 +621,8 @@ def test_local_broker_command(monkeypatch):
 
     assert ember.set_zone_target_temperature(zone["zoneid"], 21)
     client = FakeMqttClient.instances[-1]
-    assert client.target == ("192.168.0.235", 11883)
-    assert client.credentials == ("ha_ember", "pw")
+    assert client.target == ("192.168.1.20", 11883)
+    assert client.credentials == ("me", "pw")
     assert not getattr(client, "tls", False)
     topic, msg, qos = client.published[0]
     assert topic.endswith("/download/pointdata")
@@ -659,12 +659,12 @@ def test_local_broker_listener_does_not_refresh_token(monkeypatch):
     monkeypatch.setattr(pe.mqtt, "Client", FakeMqttClient)
     ember.start_listening(lambda zone: None)
     client = FakeMqttClient.instances[-1]
-    assert client.target == ("192.168.0.235", 11883)
+    assert client.target == ("192.168.1.20", 11883)
     assert client.subscribed == [("P/U/upload/pointdata", 1)]
     monkeypatch.setattr(ember, "messenging_credentials",
                         lambda: pytest.fail("should not refresh"))
     client.on_disconnect(client, None, None, FakeReason(True), None)
-    assert client.credentials == ("ha_ember", "pw")
+    assert client.credentials == ("me", "pw")
 
 
 def test_user_id_failure_is_a_connection_error(monkeypatch):

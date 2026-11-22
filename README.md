@@ -38,6 +38,26 @@ zones and calls back for each report (from a background thread):
     >>> e.start_listening(changed)
     >>> e.stop_listening()
 
+Local control (optional)
+------------------------
+
+The gateway talks to the Ember cloud over plain MQTT, to
+`eu-base-mqtt.topband-cloud.com` on port 11883. If you point that name at an
+MQTT broker on your own network (for the gateway only), commands and live
+updates can go through that broker instead of the cloud; a change then reaches
+the gateway in well under a second:
+
+    >>> e = EphEmber('my@username.com', 'mypassword', local_broker={
+    ...     'host': '192.168.1.20',    # your broker
+    ...     'port': 11883,             # default
+    ...     'username': 'me', 'password': 'secret',  # your broker's login
+    ... })
+
+The cloud is still used to log in and to list the homes and zones. Setting up
+the broker and the redirect is up to you, and the Ember app only keeps working
+if the broker also bridges to the cloud. See [local broker](docs/local-broker.md).
+This is unofficial: EPH could change how the gateway connects at any time.
+
 API
 ---
 
