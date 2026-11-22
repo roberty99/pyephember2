@@ -1580,6 +1580,11 @@ class EphEmberLocal(EphEmber):
     unless zone_ids={mac: zoneid} gives another (e.g. to keep the ids a
     cloud setup used).
 
+    Commands wait up to confirm_timeout seconds (default 3) for the
+    gateway to report the changed point, and return False if it doesn't
+    (e.g. while it is not connected to the broker), so that a change is
+    never lost silently.
+
     Call close() when done.
     """
 
@@ -1600,6 +1605,8 @@ class EphEmberLocal(EphEmber):
 
         self._names = dict(names or {})
         self._zone_ids = dict(zone_ids or {})
+        self.confirm_timeout = 3
+        self._waiters = {}  # mac -> [(point indexes, threading.Event)]
         self._homes = []
         self._pending_points = {}
         self._pending_programmes = {}
@@ -1665,6 +1672,10 @@ class EphEmberLocal(EphEmber):
                         str(data["mac"]), []).extend(points)
                     return []
                 zone_apply_points(zone, points)
+                reported = {index for index, _ in points}
+                for indexes, event in self._waiters.get(zone["mac"], []):
+                    if indexes & reported:
+                        event.set()
                 return [zone]
             if kind == "programme":
                 self._have_programme.add(str(data[0]))
@@ -1761,14 +1772,42 @@ class EphEmberLocal(EphEmber):
         raise EphEmberError("No Ember cloud login in local mode")
 
     def _send_zone_commands(self, zone, commands):
-        # reuse the open connection when there is one
+        """
+        Send commands over the open connection and wait for the gateway to
+        report the changed points. Returns False if it doesn't.
+        """
+        if isinstance(commands, ZoneCommand):
+            commands = [commands]
         connection = self._connection.client
-        if connection is not None and connection.is_connected():
+        if connection is None or not connection.is_connected():
+            _LOGGER.warning("Not connected to the local broker; %s not "
+                            "changed", zone.get("name"))
+            return False
+        indexes = {
+            index for command in commands
+            for index, _ in parse_point_data(base64.b64encode(
+                bytes(zone_command_to_ints(zone, command))))
+        }
+        waiter = (indexes, threading.Event())
+        mac = zone["mac"]
+        with self._lock:
+            self._waiters.setdefault(mac, []).append(waiter)
+        try:
             self.messenger.client = connection
             self.messenger.user_id = self._user['user_id']
-        else:
-            self.messenger.client = None
-        return super()._send_zone_commands(zone, commands)
+            sent = self.messenger.send_zone_commands(zone, commands)
+            confirmed = sent and waiter[1].wait(self.confirm_timeout)
+        finally:
+            with self._lock:
+                self._waiters[mac].remove(waiter)
+                if not self._waiters[mac]:
+                    del self._waiters[mac]
+        if not confirmed:
+            _LOGGER.warning("The Ember gateway did not confirm the change "
+                            "to %s (is it connected to the broker?)",
+                            zone.get("name"))
+        # the gateway's report has already updated the cached zone
+        return bool(confirmed)
 
     def start_listening(self, callback):
         """

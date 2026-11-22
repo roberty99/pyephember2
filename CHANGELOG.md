@@ -4,8 +4,10 @@
 
 - `EphEmberLocal`: cloud-free mode. It needs no Ember account: zones,
   readings and schedules come from the gateway's own reports on a local
-  broker, and commands go straight to it (confirmed by the gateway in
-  about 0.3 s). It has the same methods as `EphEmber`. See
+  broker, and commands go straight to it. Each command waits for the
+  gateway to report the change (about 0.3 s) and returns False if it
+  doesn't within `confirm_timeout` (3 s), e.g. while the gateway is not
+  connected, so a change is never lost silently. It has the same methods as `EphEmber`. See
   docs/local-broker.md.
 - `tools/ember_state_keeper.py` keeps the gateway's latest reports as
   retained messages, so `EphEmberLocal` gets the zone list and schedules

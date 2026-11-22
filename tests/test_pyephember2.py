@@ -805,9 +805,24 @@ def test_local_live_updates_and_online(monkeypatch):
     assert not ember.is_listening()
 
 
+def gateway_echoes(client):
+    """Make the fake broker answer each command like the gateway does."""
+    publish = client.publish
+
+    def echo(topic, msg, qos):
+        result = publish(topic, msg, qos)
+        data = json.loads(msg)["data"]
+        client.on_message(client, None, local_message(
+            "upload/pointdata", data))
+        return result
+
+    client.publish = echo
+
+
 def test_local_command_uses_open_connection(monkeypatch):
     ember, client = local_ember(monkeypatch)
     gateway_reports(client)
+    gateway_echoes(client)
     assert ember.set_zone_target_temperature("rad", 20)
     topic, msg, qos = client.published[0]
     assert topic == "P/U/download/pointdata" and qos == 1
@@ -828,8 +843,46 @@ def test_local_has_no_cloud_login(monkeypatch):
 def test_local_keeps_cloud_zone_ids(monkeypatch):
     ember, client = local_ember(monkeypatch, zone_ids={"rad": "cloud-7"})
     gateway_reports(client)
+    gateway_echoes(client)
     radiators = ember.get_zone("cloud-7")
     assert radiators["mac"] == "rad"
     assert ember.get_zone("hw")["zoneid"] == "hw"
     assert ember.set_zone_target_temperature("cloud-7", 20)
     assert client.published[0][1]["data"]["mac"] == "rad"
+
+
+def test_local_command_not_confirmed(monkeypatch, caplog):
+    ember, client = local_ember(monkeypatch)
+    gateway_reports(client)
+    ember.confirm_timeout = 0.05
+    before = pe.zone_target_temperature(ember.get_zone("rad"))
+    assert ember.set_zone_target_temperature("rad", 22) is False
+    assert client.published  # sent, but the gateway never answered
+    assert pe.zone_target_temperature(ember.get_zone("rad")) == before
+    assert "did not confirm" in caplog.text
+    assert ember._waiters == {}
+
+
+def test_local_command_needs_connection(monkeypatch):
+    ember, client = local_ember(monkeypatch)
+    gateway_reports(client)
+    client.connected = False
+    assert ember.set_zone_target_temperature("rad", 22) is False
+    assert client.published == []
+
+
+def test_local_other_reports_do_not_confirm(monkeypatch):
+    ember, client = local_ember(monkeypatch)
+    gateway_reports(client)
+    ember.confirm_timeout = 0.05
+    publish = client.publish
+
+    def other_point(topic, msg, qos):
+        result = publish(topic, msg, qos)
+        client.on_message(client, None, local_message("upload/pointdata", {
+            "mac": "rad", "pointData": base64.b64encode(
+                bytes([0, 5, 2, 0, 190])).decode()}))  # current temp only
+        return result
+
+    client.publish = other_point
+    assert ember.set_zone_target_temperature("rad", 22) is False
