@@ -680,3 +680,146 @@ def test_user_id_failure_is_a_connection_error(monkeypatch):
     monkeypatch.setattr(EphEmber, "_http", http)
     with pytest.raises(pe.EphEmberError, match="Cannot get user ID"):
         ember.messenging_credentials()
+
+
+# --- cloud-free (EphEmberLocal) -----------------------------------------------
+
+HW_POINTS = ("AAMBDAAEAQAABQIBbQAGBAJYAAcBAwAIAQAACQUAAAAAAAoBAQALAQAADQEB"
+             "AA4EAlgADwUABQAFABAFAAAAAAARBQAAAAAAEgUABQAF")
+RAD_POINTS = ("AAMBDQAEAQAABQIAwgAGBAC+AAcBAgAIAQAACQUAAAAAAAoBAQALAQAADQEB"
+              "AA4EAL4ADwUTE6+vABAF3IIAAAARBQAAAAoAEgUABQAD")
+HW_PROGRAMME = [[[70, 80], [173, 193], [193, 195]],
+                [[0, 0], [0, 0], [194, 195]]] + [
+                    [[70, 80], [173, 193], [193, 195]]] * 5
+
+
+def local_message(topic, data, padding=b""):
+    payload = json.dumps({"common": {"serial": 1}, "data": data}).encode()
+    return SimpleNamespace(topic="P/U/" + topic, payload=payload + padding)
+
+
+def local_ember(monkeypatch, **kwargs):
+    FakeMqttClient.instances.clear()
+    monkeypatch.setattr(pe.mqtt, "Client", FakeMqttClient)
+    ember = pe.EphEmberLocal({"host": "h", "username": "me",
+                              "password": "pw"}, wait=0, **kwargs)
+    return ember, FakeMqttClient.instances[-1]
+
+
+def gateway_reports(client, order=("zoneType", "pointdata", "programme")):
+    messages = {
+        "zoneType": [local_message("state/zoneType/gateway", {"devices": [
+            {"productId": "X", "mac": "hw", "DType": 4, "online": 1},
+            {"productId": "X", "mac": "rad", "DType": 2, "online": 1}]})],
+        "pointdata": [
+            local_message("state/pointdata/hw",
+                          {"mac": "hw", "pointData": HW_POINTS}),
+            local_message("upload/pointdata",
+                          {"mac": "rad", "pointData": RAD_POINTS}, b"\0\0")],
+        "programme": [
+            local_message("state/programme/hw", ["hw", HW_PROGRAMME]),
+            local_message("state/programme/rad", ["rad", [[[0, 0]] * 3] * 7])],
+    }
+    for kind in order:
+        for message in messages[kind]:
+            client.on_message(client, None, message)
+
+
+def test_local_connects_without_cloud(monkeypatch):
+    monkeypatch.setattr(EphEmber, "_http",
+                        lambda *a, **k: pytest.fail("no cloud"))
+    ember, client = local_ember(monkeypatch)
+    assert client.target == ("h", 11883)
+    assert client.credentials == ("me", "pw")
+    assert ("+/+/state/#", 1) in client.subscribed
+    assert ("+/+/upload/#", 1) in client.subscribed
+    assert ember.get_zones() == []
+
+
+@pytest.mark.parametrize("order", [
+    ("zoneType", "pointdata", "programme"),
+    ("programme", "pointdata", "zoneType"),
+])
+def test_local_zones_from_gateway_reports(monkeypatch, order):
+    ember, client = local_ember(
+        monkeypatch, names={"rad": "Radiators"}, tz=ZoneInfo("Europe/Dublin"))
+    gateway_reports(client, order)
+    assert ember._ready.is_set()
+
+    zones = zones_by_name(ember)
+    assert set(zones) == {"Hot Water", "Radiators"}
+    hot_water, radiators = zones["Hot Water"], zones["Radiators"]
+    assert hot_water["zoneid"] == "hw" and hot_water["deviceType"] == 4
+    assert (hot_water["productId"], hot_water["uid"]) == ("P", "U")
+    assert pe.zone_target_temperature(hot_water) == 60.0
+    assert pe.zone_current_temperature(hot_water) == 36.5
+    assert pe.zone_target_temperature(radiators) == 19.0
+    assert pe.zone_current_temperature(radiators) == 19.4
+    assert pe.zone_mode(radiators) == ZoneMode.ON
+    # Sunday's schedule, as the cloud would give it
+    sunday = hot_water["days"][0]["programs"]
+    assert [(p["startTime"], p["endTime"]) for p in sunday.values()] == [
+        (70, 80), (173, 193), (193, 195)]
+    assert ember.get_zone("rad") is radiators
+
+
+def test_local_default_names(monkeypatch):
+    ember, client = local_ember(monkeypatch)
+    client.on_message(client, None, local_message(
+        "upload/zoneType", {"devices": [
+            {"mac": "a", "DType": 2}, {"mac": "b", "DType": 2},
+            {"mac": "c", "DType": 4}]}))
+    assert sorted(ember.get_zone_names()) == [
+        "Heating", "Heating 2", "Hot Water"]
+
+
+def test_local_not_ready_without_schedules(monkeypatch):
+    ember, client = local_ember(monkeypatch)
+    gateway_reports(client, ("zoneType", "pointdata"))
+    assert not ember._ready.is_set()
+
+
+def test_local_live_updates_and_online(monkeypatch):
+    ember, client = local_ember(monkeypatch)
+    gateway_reports(client)
+    updates = []
+    ember.start_listening(updates.append)
+    assert ember.is_listening()
+    client.on_message(client, None, local_message("upload/pointdata", {
+        "mac": "rad", "pointData": base64.b64encode(
+            bytes([0, 6, 4, 0, 215])).decode()}))
+    radiators = ember.get_zone("rad")
+    assert updates == [radiators]
+    assert pe.zone_target_temperature(radiators) == 21.5
+    client.on_message(client, None, local_message(
+        "upload/thermostat", {"mac": ["rad"], "online": 0}))
+    assert ember.is_zone_online("rad") is False
+    # reports about the gateway itself or other kinds are ignored
+    for message in (local_message("upload/pointdata", {
+            "mac": "gw", "pointData": "AAIBRg=="}),
+            local_message("upload/commdata", {"version": []}),
+            SimpleNamespace(topic="P/U/upload/pointdata", payload=b"junk")):
+        client.on_message(client, None, message)
+    assert len(updates) == 2
+    ember.stop_listening()
+    assert not ember.is_listening()
+
+
+def test_local_command_uses_open_connection(monkeypatch):
+    ember, client = local_ember(monkeypatch)
+    gateway_reports(client)
+    assert ember.set_zone_target_temperature("rad", 20)
+    topic, msg, qos = client.published[0]
+    assert topic == "P/U/download/pointdata" and qos == 1
+    assert msg["data"] == {"mac": "rad", "pointData": "AAYEAMg="}
+    assert msg["common"]["userId"] is None
+    assert client.connected  # not closed after the command
+    assert pe.zone_target_temperature(ember.get_zone("rad")) == 20.0
+    ember.close()
+    assert not client.connected
+
+
+def test_local_has_no_cloud_login(monkeypatch):
+    ember, client = local_ember(monkeypatch)
+    with pytest.raises(pe.EphEmberError):
+        ember.messenging_credentials()

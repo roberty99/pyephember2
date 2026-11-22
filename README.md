@@ -56,6 +56,17 @@ the gateway in well under a second:
 The cloud is still used to log in and to list the homes and zones. Setting up
 the broker and the redirect is up to you, and the Ember app only keeps working
 if the broker also bridges to the cloud. See [local broker](docs/local-broker.md).
+
+To leave the cloud out completely, use `EphEmberLocal`. It needs no Ember
+account: the zones, readings and schedules all come from the gateway's own
+reports. It has the same methods as `EphEmber`; call `close()` when done.
+
+    >>> from pyephember2.pyephember2 import EphEmberLocal
+    >>> e = EphEmberLocal({'host': '192.168.1.20', 'username': 'me',
+    ...                    'password': 'secret'},
+    ...                   names={'0a1b2c3d4': 'Radiators'})
+    >>> e.get_zone_names()
+    ['Hot Water', 'Radiators']
 This is unofficial: EPH could change how the gateway connects at any time.
 
 API

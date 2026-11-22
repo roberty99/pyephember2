@@ -98,5 +98,38 @@ Commands (`set_zone_target_temperature`, `set_zone_mode`, ...) and
 `start_listening` then use the local broker. Logging in and reading the zones
 still use the cloud.
 
+### Without the cloud: `EphEmberLocal`
+
+`EphEmberLocal` uses only the local broker: no Ember account, no cloud.
+
+```python
+from pyephember2.pyephember2 import EphEmberLocal
+
+e = EphEmberLocal({"host": "192.168.1.20", "username": "me",
+                   "password": "secret"},
+                  names={"0a1b2c3d4": "Radiators"},   # optional
+                  tz=ZoneInfo("Europe/Dublin"))
+e.get_zones()                 # same format as EphEmber
+e.set_zone_target_temperature("0a1b2c3d4", 20)
+e.start_listening(callback)   # every report, from a background thread
+e.close()
+```
+
+- Zone ids are the zones' macs (as the gateway reports them).
+- The gateway doesn't know the zone names. Pass `names={mac: name}`;
+  otherwise hot water zones are called "Hot Water" and others "Heating",
+  numbered if there are several.
+- The gateway sends its zone list and schedules **only when it connects**.
+  Run [`tools/ember_state_keeper.py`](../tools/ember_state_keeper.py) next to
+  the broker. It republishes the latest reports as retained messages under
+  `<productId>/<uid>/state/...`, so `EphEmberLocal` gets everything as soon as
+  it connects. Without it, the zones appear the next time the gateway
+  reconnects.
+- `EphEmberLocal(...)` waits up to `wait` seconds (default 10) for every zone's
+  readings and schedule.
+
+With `EphEmberLocal` you can switch the bridge off. The Ember app then stops
+working, but the heating can still be controlled.
+
 To undo all this, remove the DNS rule and power-cycle the gateway. It goes back
 to the cloud.

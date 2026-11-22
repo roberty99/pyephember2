@@ -298,6 +298,59 @@ def scheduletime_to_time(dict, key_name):
         return datetime.time.max
     return datetime.time(hours, 10 * tens_of_minutes)
 
+def build_zone_programs(zone):
+    """
+    Turn a zone's deviceDays into zone["days"]: dayType -> day with its
+    "programs", each linked to the previous and next one.
+    """
+    # build programs
+    zone["days"] = {}
+    prevProgramm = None
+    for day in sorted(
+        zone["deviceDays"], key=lambda x: x["dayType"], reverse=False
+    ):
+        day["programs"] = {}
+        keys = day.keys()
+        for key in keys:
+            if key.startswith("p"):
+                tryGetId = try_parse_int(key[1:])
+                if tryGetId[1]:
+                    programm = day[key]
+                    if programm is not None:
+                        if prevProgramm is not None:
+                            programm["Prev"] = prevProgramm
+                        programm["Count"] = tryGetId[0]
+                        prevProgramm = programm
+                        day["programs"][tryGetId[0]] = programm
+        zone["days"][day["dayType"]] = day
+    # reverse loop to connect all Prev programs
+    lastProgramm = None
+    firstProgramm = None
+    for day in OrderedDict(sorted(zone["days"].items(), reverse=True)):
+        if lastProgramm is not None:
+            firstProgramm = zone["days"][day]["programs"][
+                lastKey(zone["days"][day]["programs"])
+            ]
+            lastProgramm["Prev"] = firstProgramm
+        lastProgramm = zone["days"][day]["programs"][
+            firstKey(zone["days"][day]["programs"])
+        ]
+
+    lastProgramm["Prev"] = firstProgramm
+
+    firstDayPrograms = zone["days"][firstKey(zone["days"])]["programs"]
+    firstProgram = firstDayPrograms[firstKey(firstDayPrograms)]
+    nextProgram = firstProgram
+    for day in OrderedDict(sorted(zone["days"].items(), reverse=True)):
+        orderedProgs = OrderedDict(
+            sorted(zone["days"][day]["programs"].items(), reverse=True)
+        )
+        for progNum in orderedProgs:
+            program = zone["days"][day]["programs"][progNum]
+            program["Next"] = nextProgram
+            nextProgram = program
+
+
 def getZoneTime(zone):
     """
     Return [time, dayType] of the zone's data timestamp in the home's
@@ -1146,53 +1199,7 @@ class EphEmber:
                 raise RuntimeError("Error getting zones from home: no timestamp found")
 
             for zone in homezones["data"]:
-                # build programs
-                zone["days"] = {}
-                prevProgramm = None
-                for day in sorted(
-                    zone["deviceDays"], key=lambda x: x["dayType"], reverse=False
-                ):
-                    day["programs"] = {}
-                    keys = day.keys()
-                    for key in keys:
-                        if key.startswith("p"):
-                            tryGetId = try_parse_int(key[1:])
-                            if tryGetId[1]:
-                                programm = day[key]
-                                if programm is not None:
-                                    if prevProgramm is not None:
-                                        programm["Prev"] = prevProgramm
-                                    programm["Count"] = tryGetId[0]
-                                    prevProgramm = programm
-                                    day["programs"][tryGetId[0]] = programm
-                    zone["days"][day["dayType"]] = day
-                # reverse loop to connect all Prev programs
-                lastProgramm = None
-                firstProgramm = None
-                for day in OrderedDict(sorted(zone["days"].items(), reverse=True)):
-                    if lastProgramm is not None:
-                        firstProgramm = zone["days"][day]["programs"][
-                            lastKey(zone["days"][day]["programs"])
-                        ]
-                        lastProgramm["Prev"] = firstProgramm
-                    lastProgramm = zone["days"][day]["programs"][
-                        firstKey(zone["days"][day]["programs"])
-                    ]
-
-                lastProgramm["Prev"] = firstProgramm
-
-                firstDayPrograms = zone["days"][firstKey(zone["days"])]["programs"]
-                firstProgram = firstDayPrograms[firstKey(firstDayPrograms)]
-                nextProgram = firstProgram
-                for day in OrderedDict(sorted(zone["days"].items(), reverse=True)):
-                    orderedProgs = OrderedDict(
-                        sorted(zone["days"][day]["programs"].items(), reverse=True)
-                    )
-                    for progNum in orderedProgs:
-                        program = zone["days"][day]["programs"][progNum]
-                        program["Next"] = nextProgram
-                        nextProgram = program
-
+                build_zone_programs(zone)
                 zone["timestamp"] = homezones["timestamp"]
                 zone["tzinfo"] = self.tz
                 home["zones"].append(zone)
@@ -1550,3 +1557,251 @@ class EphEmber:
 
         if not self._login():
             raise RuntimeError("Unable to login.")
+
+
+_LOCAL_ZONE_NAMES = {4: "Hot Water"}
+
+
+class EphEmberLocal(EphEmber):
+    """
+    Cloud-free access to a gateway that is connected to an MQTT broker on
+    the local network (see docs/local-broker.md). No Ember account is used:
+    the zones, their readings and their schedules all come from the
+    gateway's own reports, and commands go straight to it.
+
+    The broker should keep the gateway's latest reports as retained
+    messages under <productId>/<uid>/state/... (the gateway only sends its
+    zone list and schedules when it connects); otherwise the zones appear
+    the next time the gateway reconnects.
+
+    Zone names are not known to the gateway. Pass names={mac: name} to set
+    them; otherwise hot water zones are called "Hot Water" and others
+    "Heating" (numbered if there are several). zoneid is the zone's mac.
+
+    Call close() when done.
+    """
+
+    # pylint: disable=super-init-not-called
+    def __init__(self, local_broker, names=None, tz=None, user_id=None,
+                 wait=10):
+        self._login_data = None
+        self._auth_lock = threading.RLock()
+        self._listener = None
+        self._user = {'user_id': user_id, 'username': None, 'password': None}
+        self._home_details = None
+        self.NextHomeUpdateDaytime = None
+        self.command_settle_seconds = 30
+        self.tz = tz
+        self.http_api_base = None
+        self.local_broker = dict(local_broker)
+        self.local_broker.setdefault('port', 11883)
+
+        self._names = dict(names or {})
+        self._homes = []
+        self._pending_points = {}
+        self._pending_programmes = {}
+        self._have_programme = set()
+        self._lock = threading.RLock()
+        self._callback = None
+        self._ready = threading.Event()
+
+        self.messenger = EphMessenger(self)
+        self._connection = EphMessenger(self)
+        client = self._connection.start(callbacks={
+            'on_connect': self._on_connect,
+            'on_message': self._on_message,
+        }, connect_async=True)
+        client.reconnect_delay_set(min_delay=1, max_delay=60)
+        client.loop_start()
+        if wait:
+            self._ready.wait(wait)
+
+    # MQTT
+
+    def _on_connect(self, client, userdata, flags, reason_code,
+                    properties=None):
+        # pylint: disable=unused-argument,too-many-arguments
+        if getattr(reason_code, 'is_failure', False):
+            _LOGGER.debug("Ember local broker refused: %s", reason_code)
+            return
+        _LOGGER.debug("Ember local broker connected")
+        client.subscribe("+/+/state/#", 1)
+        client.subscribe("+/+/upload/#", 1)
+
+    def _on_message(self, client, userdata, message):
+        # pylint: disable=unused-argument
+        parts = message.topic.split("/")
+        if len(parts) < 4 or parts[2] not in ("upload", "state"):
+            return
+        try:
+            payload = message.payload.decode('utf-8', 'replace')
+            data = json.JSONDecoder().raw_decode(payload)[0]['data']
+            changed = self._apply_local(parts[0], parts[1], parts[3], data)
+        except (ValueError, KeyError, TypeError, IndexError) as err:
+            _LOGGER.debug("Ignoring Ember report on %s: %s",
+                          message.topic, err)
+            return
+        self._check_ready()
+        callback = self._callback
+        if callback is not None:
+            for zone in changed:
+                callback(zone)
+
+    def _apply_local(self, product_id, uid, kind, data):
+        """Apply one gateway report; return the zones it changed."""
+        with self._lock:
+            if kind == "zoneType":
+                return [self._local_zone(product_id, uid, device)
+                        for device in data["devices"]]
+            if kind == "pointdata":
+                points = parse_point_data(data["pointData"])
+                zone = self._find_zone(data["mac"])
+                if zone is None:
+                    # not in the zone list yet; keep for when it arrives
+                    self._pending_points.setdefault(
+                        str(data["mac"]), []).extend(points)
+                    return []
+                zone_apply_points(zone, points)
+                return [zone]
+            if kind == "programme":
+                self._have_programme.add(str(data[0]))
+                zone = self._find_zone(data[0])
+                if zone is None:
+                    self._pending_programmes[str(data[0])] = data[1]
+                    return []
+                zone["deviceDays"] = _local_device_days(data[1])
+                build_zone_programs(zone)
+                return [zone]
+            if kind == "thermostat":
+                zones = [self._find_zone(mac) for mac in data["mac"]]
+                zones = [zone for zone in zones if zone is not None]
+                for zone in zones:
+                    zone["isonline"] = bool(data.get("online", 1))
+                return zones
+        return []
+
+    def _check_ready(self):
+        """Ready once every known zone has its readings and schedule."""
+        with self._lock:
+            zones = [zone for home in self._homes for zone in home["zones"]]
+            if zones and all(zone["pointDataList"] and zone["mac"]
+                             in self._have_programme for zone in zones):
+                self._ready.set()
+
+    def _find_zone(self, mac):
+        for home in self._homes:
+            for zone in home["zones"]:
+                if zone["mac"] == str(mac):
+                    return zone
+        return None
+
+    def _local_zone(self, product_id, uid, device):
+        """Create or update a zone from a zoneType device entry."""
+        mac = str(device["mac"])
+        zone = self._find_zone(mac)
+        if zone is None:
+            home = next((home for home in self._homes
+                         if home["gatewayid"] == uid), None)
+            if home is None:
+                home = {"gatewayid": uid, "name": "Home", "zones": []}
+                self._homes.append(home)
+            zone = {
+                "zoneid": mac,
+                "mac": mac,
+                "name": self._names.get(mac)
+                or self._default_name(device.get("DType")),
+                "deviceType": device.get("DType"),
+                "productId": product_id,
+                "uid": uid,
+                "pointDataList": [],
+                "deviceDays": _local_device_days(
+                    self._pending_programmes.pop(mac, [])),
+                "tzinfo": self.tz,
+            }
+            build_zone_programs(zone)
+            home["zones"].append(zone)
+            zone_apply_points(zone, self._pending_points.pop(mac, []))
+        zone["deviceType"] = device.get("DType", zone["deviceType"])
+        zone["isonline"] = bool(device.get("online", 1))
+        return zone
+
+    def _default_name(self, device_type):
+        base = _LOCAL_ZONE_NAMES.get(device_type, "Heating")
+        taken = {zone["name"] for home in self._homes
+                 for zone in home["zones"]}
+        name, number = base, 2
+        while name in taken:
+            name, number = "{} {}".format(base, number), number + 1
+        return name
+
+    # EphEmber interface
+
+    def get_homes(self):
+        """
+        The homes and zones seen on the local broker
+        """
+        now = int(1000 * time.time())
+        with self._lock:
+            for home in self._homes:
+                for zone in home["zones"]:
+                    zone["timestamp"] = now
+            return self._homes
+
+    def list_homes(self):
+        return [{"gatewayid": home["gatewayid"], "name": home["name"]}
+                for home in self.get_homes()]
+
+    def cached_user_id(self):
+        return self._user['user_id']
+
+    def messenging_credentials(self):
+        raise EphEmberError("No Ember cloud login in local mode")
+
+    def _send_zone_commands(self, zone, commands):
+        # reuse the open connection when there is one
+        connection = self._connection.client
+        if connection is not None and connection.is_connected():
+            self.messenger.client = connection
+            self.messenger.user_id = self._user['user_id']
+        else:
+            self.messenger.client = None
+        return super()._send_zone_commands(zone, commands)
+
+    def start_listening(self, callback):
+        """
+        Call callback(zone) from a background thread for every report
+        """
+        self._callback = callback
+
+    def stop_listening(self):
+        self._callback = None
+
+    def is_listening(self):
+        client = self._connection.client
+        return bool(self._callback is not None and client is not None
+                    and client.is_connected())
+
+    def close(self):
+        """
+        Disconnect from the local broker
+        """
+        self._callback = None
+        self._connection.stop()
+
+
+def _local_device_days(programme):
+    """
+    Convert the gateway's programme (7 days of [start, end] pairs, Sunday
+    first) to the cloud's deviceDays format.
+    """
+    days = []
+    for day_type in range(7):
+        slots = programme[day_type] if day_type < len(programme) else []
+        day = {"dayType": day_type}
+        for number in range(3):
+            start, end = slots[number] if number < len(slots) else (0, 0)
+            day["p{}".format(number + 1)] = {
+                "startTime": start, "endTime": end
+            }
+        days.append(day)
+    return days
