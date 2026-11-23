@@ -28,7 +28,8 @@ API = "https://eu-https.topband-cloud.com/ember-back/"
 POLLING_FIELDS = (
     "deviceType", "systemType", "ishotwater", "isonline", "mode",
     "currenttemperature", "targettemperature", "isboostactive",
-    "isadvanceactive", "prefix",
+    "isadvanceactive", "prefix", "status", "hour", "startTime",
+    "storedtargettemperature",
 )
 SCHEDULE_FIELDS = ("startTime", "endTime", "time", "temperature",
                    "starttime", "endtime")
@@ -110,7 +111,7 @@ def main():
     if not homes or homes.get("status") != 0:
         sys.exit("Could not list homes (HTTP {}).".format(status))
 
-    report = {"report": "pyephember2 ember_report 1", "homes": []}
+    report = {"report": "pyephember2 ember_report 2", "homes": []}
     for number, home in enumerate(homes.get("data") or [], 1):
         gateway = {"gateWayId": home["gatewayid"]}
         entry = {
